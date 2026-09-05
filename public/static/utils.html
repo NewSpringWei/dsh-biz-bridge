@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-biz-bridge · 工具</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="utils">
+<header class="site">
+  <span class="brand">dsh-biz-bridge</span>
+  <nav class="main">
+    <a href="index.html">首页</a>
+    <a href="admin.html">管理运维</a>
+    <a href="client.html">接入测试</a>
+    <a href="utils.html">工具</a>
+  </nav>
+  <span class="tag">免验签</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>RSA-2048 密钥对生成</h2>
+    <p class="msg">浏览器本地生成签名密钥对（不依赖服务器）。输入要注册的 Client-Id，输出公钥与私钥：
+    <b>公钥</b>注册进服务端插件配置 <code>auth.clients[].publicKey</code>；<b>私钥</b>只留在本机，
+    交给对应工具/客户端使用，切勿外传或提交到代码仓库。</p>
+    <div class="row">
+      <div class="field grow"><label>目标 Client-Id</label>
+        <input id="genClientId" placeholder="biz-system-a / admin-ops" autocomplete="off"></div>
+      <button id="btnGen" class="primary">生成 RSA-2048 密钥对</button>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="field"><label>公钥（SPKI PEM → 服务端 auth.clients[].publicKey）</label>
+        <textarea id="genPublic" rows="8" readonly placeholder="点击生成…"></textarea>
+        <div><button id="copyPublic" class="small">复制公钥</button></div>
+      </div>
+      <div class="field"><label>私钥（PKCS#8 PEM → 工具 / 客户端私钥）</label>
+        <textarea id="genPrivate" rows="8" readonly placeholder="点击生成…"></textarea>
+        <div><button id="copyPrivate" class="small">复制私钥</button></div>
+      </div>
+    </div>
+    <p class="msg" id="genMsg"></p>
+  </section>
+
+  <section class="panel">
+    <h2>时间转换（开发调试常用）</h2>
+    <div class="grid2">
+      <div class="field"><label>Unix 时间戳（秒）→ ISO 时间</label>
+        <input id="tEpoch" placeholder="如 1750000000">
+        <button id="btnToIso" class="small">转换</button>
+        <input id="outIso" readonly placeholder="结果"></div>
+      <div class="field"><label>ISO 时间 → Unix 时间戳（秒）</label>
+        <input id="tIso" placeholder="如 2026-09-04T10:00:00.000Z">
+        <button id="btnToEpoch" class="small">转换</button>
+        <input id="outEpoch" readonly placeholder="结果"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>预留小工具位</h2>
+    <div class="placeholder">后续的免鉴权小工具可加在这里（与密钥工具一样只放在本页、不需要验签）。</div>
+  </section>
+</main>
+<script src="common.js"></script>
+<script>
+(function (Bridge) {
+  var B = Bridge, $ = B.$
+  function msg(text, kind) { B.showMsg($('genMsg'), text, kind) }
+  $('btnGen').onclick = async function () {
+    var clientId = $('genClientId').value.trim()
+    msg('', '')
+    if (!B.ID_PATTERN.test(clientId)) { msg('Client-Id 需匹配 1-128 位字母 / 数字 / _ / -', 'err'); return }
+    try {
+      var pair = await B.makeKeyPair()
+      $('genPublic').value = pair.publicPem
+      $('genPrivate').value = pair.privatePem
+      msg('已为 ' + clientId + ' 生成密钥对。把公钥注册进服务端 auth.clients（scope 按用途填写），私钥仅保存在本机。', 'ok')
+    } catch (e) { msg('生成失败：' + e.message, 'err') }
+  }
+  $('copyPublic').onclick = async function () {
+    var ok = await B.copyText($('genPublic').value)
+    msg(ok ? '公钥已复制' : '请先生成密钥对', ok ? 'ok' : 'err')
+  }
+  $('copyPrivate').onclick = async function () {
+    var ok = await B.copyText($('genPrivate').value)
+    msg(ok ? '私钥已复制' : '请先生成密钥对', ok ? 'ok' : 'err')
+  }
+
+  $('btnToIso').onclick = function () {
+    var sec = parseInt($('tEpoch').value.trim(), 10)
+    if (!isFinite(sec)) { $('outIso').value = '输入非法' ; return }
+    $('outIso').value = new Date(sec * 1000).toISOString()
+  }
+  $('btnToEpoch').onclick = function () {
+    var t = Date.parse($('tIso').value.trim())
+    if (isNaN(t)) { $('outEpoch').value = '输入非法（需 ISO 时间）'; return }
+    $('outEpoch').value = String(Math.floor(t / 1000))
+  }
+})(window.Bridge)
+</script>
+</body>
+</html>

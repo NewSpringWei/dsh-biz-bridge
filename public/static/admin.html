@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-biz-bridge · 管理运维</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="admin">
+<header class="site">
+  <span class="brand">dsh-biz-bridge</span>
+  <nav class="main">
+    <a href="index.html">首页</a>
+    <a href="admin.html">管理运维</a>
+    <a href="client.html">接入测试</a>
+    <a href="utils.html">工具</a>
+  </nav>
+  <span class="tag">需管理级 scope 验签</span>
+</header>
+<main>
+  <section class="keybar">
+    <div class="grid2">
+      <div class="field"><label>Base URL（插件前缀）</label><input id="authBaseUrl" value="http://127.0.0.1:3080/bizbridge" autocomplete="off"></div>
+      <div class="field"><label>X-Client-Id（管理级 client）</label><input id="authClientId" placeholder="admin-ops" autocomplete="off"></div>
+      <div class="field" style="grid-column:1/-1">
+        <label>管理级 RSA 私钥（PKCS#8 PEM）</label>
+        <textarea id="authPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+      </div>
+    </div>
+    <span class="hint">私钥仅存于本页内存：不写入 localStorage，F5 刷新即清空。本页所有请求共用这份凭证。</span>
+  </section>
+
+  <section class="panel" id="panel-stats">
+    <h2>运行统计 <button id="btnStats" class="primary">刷新统计</button> <span id="msgStats" class="msg"></span></h2>
+    <div class="stat-cards" id="statCards"><span class="msg">点击“刷新统计”</span></div>
+  </section>
+
+  <section class="panel" id="panel-tasks">
+    <h2>任务列表（管理级可见全部 client）</h2>
+    <div class="row">
+      <div class="field"><label>状态</label>
+        <select id="fStatus"><option value="">全部</option><option>queued</option><option>received</option><option>processing</option><option>completed</option><option>failed</option><option>callback_failed</option><option>cancelled</option></select></div>
+      <div class="field"><label>类型</label>
+        <select id="fType"><option value="">全部</option><option>stream</option><option>callback</option></select></div>
+      <div class="field"><label>client_id</label><input id="fClient" placeholder="可选"></div>
+      <div class="field"><label>biz_id</label><input id="fBiz" placeholder="可选"></div>
+      <div class="field"><label>起止（YYYY-MM-DD）</label>
+        <input id="fStart" placeholder="开始日期" style="width:130px">
+        <input id="fEnd" placeholder="结束日期" style="width:130px"></div>
+      <button id="btnList" class="primary">查询</button>
+      <button id="btnNext">下一页</button>
+      <span id="msgList" class="msg"></span>
+    </div>
+    <table>
+      <thead><tr>
+        <th>task_id</th><th>client</th><th>biz_id</th><th>replay</th><th>session</th>
+        <th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
+      </tr></thead>
+      <tbody id="taskRows"><tr><td colspan="10" class="msg">点“查询”加载</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="panel-detail">
+    <h2>详情 / 日志</h2>
+    <pre class="view" id="respView">选择任务后点“详情 / 日志”，或在此查看最近一次操作响应。</pre>
+  </section>
+</main>
+<script src="common.js"></script>
+<script>
+(function (Bridge) {
+  var B = Bridge, $ = B.$, page = 1, pageSize = 20
+  var statusSel = function () { return $('fStatus').value }
+  function listFilter() {
+    var f = { page: page, page_size: pageSize }
+    if (statusSel()) f.status = statusSel()
+    if ($('fType').value) f.type = $('fType').value
+    if ($('fClient').value.trim()) f.client_id = $('fClient').value.trim()
+    if ($('fBiz').value.trim()) f.biz_id = $('fBiz').value.trim()
+    if ($('fStart').value.trim()) f.start_time = $('fStart').value.trim()
+    if ($('fEnd').value.trim()) f.end_time = $('fEnd').value.trim()
+    return f
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  }) }
+
+  $('btnStats').onclick = async function () {
+    B.showMsg($('msgStats'), '请求中…', '')
+    try {
+      var r = await B.request('/api/v1/stats', {})
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      renderStats(r.data)
+      B.showMsg($('msgStats'), '统计已刷新', 'ok')
+    } catch (e) { B.showMsg($('msgStats'), String(e), 'err') }
+  }
+  function renderStats(d) {
+    var s = d.tasks.stream, c = d.tasks.callback, cb = d.callback
+    $('statCards').innerHTML =
+      '<div class="stat-card"><b>' + s.total + '</b><span>stream 已完成<br>成功 ' + s.success + ' / 失败 ' + s.failed + '</span></div>' +
+      '<div class="stat-card"><b>' + c.total + '</b><span>callback 已完成<br>成功 ' + c.success + ' / 失败 ' + c.failed + '</span></div>' +
+      '<div class="stat-card"><b>' + d.queue.queued + '</b><span>排队中</span></div>' +
+      '<div class="stat-card"><b>' + d.queue.processing + '</b><span>处理中</span></div>' +
+      '<div class="stat-card"><b>' + cb.callback_failed + '</b><span>回调送达失败<br>平均重试 ' + cb.avg_retry_count + '</span></div>'
+  }
+
+  $('btnList').onclick = async function () { page = 1; await loadList() }
+  $('btnNext').onclick = async function () { page++; await loadList() }
+  async function loadList() {
+    B.showMsg($('msgList'), '请求中…', '')
+    try {
+      var r = await B.request('/api/v1/tasks/list', listFilter())
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      var d = r.data
+      var rows = d.tasks.map(function (t) {
+        return '<tr>' +
+          '<td><a href="javascript:void 0" data-id="' + esc(t.task_id) + '" class="taskId">' + esc(t.task_id.slice(0, 8)) + '</a></td>' +
+          '<td>' + esc(t.client_id) + '</td><td>' + esc(t.biz_id) + '</td><td>' + t.replay_seq + '</td>' +
+          '<td>' + esc(t.session_id.slice(0, 14)) + '</td><td>' + esc(t.type) + '</td><td>' + esc(t.status) + '</td>' +
+          '<td>' + t.priority + '</td><td>' + esc(t.created_at) + '</td>' +
+          '<td>' +
+            '<button class="small" data-act="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
+            '<button class="small" data-act="logs" data-id="' + esc(t.task_id) + '">日志</button> ' +
+            '<button class="small" data-act="cancel" data-id="' + esc(t.task_id) + '">取消</button> ' +
+            '<button class="small" data-act="replay" data-id="' + esc(t.task_id) + '">重播</button> ' +
+            '<button class="small" data-act="priority" data-id="' + esc(t.task_id) + '">优先级</button>' +
+          '</td></tr>'
+      }).join('')
+      $('taskRows').innerHTML = rows || '<tr><td colspan="10" class="msg">无任务</td></tr>'
+      B.showMsg($('msgList'), '第 ' + d.page + ' 页 / 共 ' + d.total + ' 条（本页 ' + d.tasks.length + '）', 'ok')
+    } catch (e) { B.showMsg($('msgList'), String(e), 'err') }
+  }
+
+  $('taskRows').onclick = async function (ev) {
+    var button = ev.target.closest ? ev.target.closest('button[data-act], a.taskId') : null
+    if (!button || !button.getAttribute('data-act')) return
+    var taskId = button.getAttribute('data-id')
+    var act = button.getAttribute('data-act')
+    if (act === 'detail' || act === 'logs') { await viewTask(taskId, act); return }
+    if (act === 'cancel') {
+      if (!window.confirm('确定取消任务 ' + taskId + ' ？（处理中任务将被中止）')) return
+    } else if (act === 'replay') {
+      if (!window.confirm('确定重播任务 ' + taskId + ' ？（仅 callback 且非排队状态）')) return
+    }
+    var body = {}
+    if (act === 'priority') {
+      var value = window.prompt('新优先级（数字越小越优先，仅 queued）', '0')
+      if (value === null) return
+      var p = parseInt(value, 10)
+      if (isNaN(p)) { B.showMsg($('msgList'), '优先级必须是整数', 'err'); return }
+      body = { priority: p }
+    }
+    try {
+      var r = await B.request('/api/v1/tasks/' + encodeURIComponent(taskId) + '/' + act, body)
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      B.showResult($('respView'), r)
+      await loadList()
+    } catch (e) { B.showMsg($('msgList'), String(e), 'err') }
+  }
+
+  async function viewTask(taskId, kind) {
+    try {
+      var r = await B.request('/api/v1/tasks/' + encodeURIComponent(taskId) + (kind === 'logs' ? '/logs' : ''), { page: 1, page_size: 50 })
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      B.showResult($('respView'), r)
+    } catch (e) { B.showMsg($('msgList'), String(e), 'err') }
+  }
+
+  // 点击 task_id 快捷查看详情
+  document.addEventListener('click', function (ev) {
+    var anchor = ev.target.closest ? ev.target.closest('a.taskId') : null
+    if (anchor) viewTask(anchor.getAttribute('data-id'), 'detail')
+  })
+})(window.Bridge)
+</script>
+</body>
+</html>

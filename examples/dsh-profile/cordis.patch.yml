@@ -1,0 +1,72 @@
+# dsh-biz-bridge —— profile bizbridge 用户层补丁（示例）
+#
+# 将本文件内容整体覆盖到 $DSH_HOME/profiles/bizbridge/cordis.patch.yml
+# （默认文件只是注释 + []，可直接替换）。字段逐项说明见同目录 README.md。
+#
+# 分层说明（仅注释）：
+#   - 首次 dsh plugin --profile bizbridge add <tgz> 已把该 profile 初始化为
+#     bundles=[@deepseek-ai/dsh-base]，并把本插件装成第二个 bundle 层；
+#   - 本文件属于用户层（最后应用）：只负责“宿主行（webServer）”与本插件 config。
+#
+# 注意：本文件是 YAML 补丁列表，不要在里面夹带 Markdown 围栏或非注释说明文本。
+
+# 1) HTTP 载体：插件的 /bizbridge 前缀挂在它上面
+#    host/port 按需修改：port 默认 42731（改端口就改这一行）。
+#    安全语义：127.0.0.1 只监听本机（推荐默认，最安全）；
+#    需要局域网/外部访问才改成 0.0.0.0，并务必配合防火墙。
+- insert:
+    - id: webserver
+      name: '@deepseek-ai/dsh-host-webserver'
+      config:
+        host: "127.0.0.1"
+        port: 42731        # 端口：按需修改（示例值，无特殊含义）
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
+
+# 2) （默认不设置）业务 agent 系统提示词
+#    业务桥接场景下，业务意图由每次请求的 prompt 表达，不建议套用
+#    “coding agent”式人设。需要自定义时再取消下面注释并按需改写：
+# - id: system-prompt
+#   config:
+#     persona: >-
+#       你是业务系统的执行代理；上下文以业务方提供的会话为准。
+
+# 3) 插件配置
+- id: dsh-biz-bridge
+  config:
+    database:
+      # SQLite 绝对路径（推荐；插件会自动创建父目录）。
+      #   Linux（服务器）：
+      #     path: /var/lib/dsh-bizbridge/data/dsh_bridge.db
+      #   Windows（本地开发，盘符按需）：
+      #     path: D:/dsh-bizbridge/data/dsh_bridge.db
+      path: /var/lib/dsh-bizbridge/data/dsh_bridge.db
+      journalMode: "WAL"
+      busyTimeout: 5000
+    auth:
+      timestampWindow: 300
+      nonceCacheSize: 10000
+      clients:
+        # 公钥整段粘贴（含 -----BEGIN/END PUBLIC KEY----- 首尾行，每行真实换行），
+        # 用 YAML 块标量 | 承接，不要压成一行带 \n 的字符串。
+        - clientId: "biz-system-a"
+          publicKey: |-
+            -----BEGIN PUBLIC KEY-----
+            把工具页生成的业务级公钥整段贴到这里，删除本注释行
+            -----END PUBLIC KEY-----
+          scope: ["stream", "callback"]
+        - clientId: "admin-ops"
+          publicKey: |-
+            -----BEGIN PUBLIC KEY-----
+            把工具页生成的管理级公钥整段贴到这里，删除本注释行
+            -----END PUBLIC KEY-----
+          scope: ["admin"]
+    scheduler:
+      pollInterval: 2
+      maxConcurrency: 5
+      callbackTimeout: 30
+      maxRetry: 3
+      retryInterval: 30
+    agent:
+      idleTimeout: 10

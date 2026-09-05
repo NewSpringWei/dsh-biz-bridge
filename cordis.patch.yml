@@ -1,0 +1,17 @@
+# dsh-biz-bridge 插件补丁清单（随包发布的 bundle 层）
+#
+# 注意：本文件是 loader 补丁；新增插件行必须用 `- insert:` 列表（顶层
+# `- id … name: …` 表示“覆盖已存在的行”，会因行不存在而报 entry not found）。
+# inject 以源码声明为准（设计 §5.1），YAML 不重复声明。
+#
+# 说明：DSH 各 base-backed profile 实际会经 '@deepseek-ai/cordis-plugin-timer'
+# 提供 `timer` 服务；本插件不注入它（调度/回收定时统一在 ctx.effect() 内用
+# setInterval 管理，见 src/index.ts 头注释）。
+#
+# 开发形态（在源码目录直接接线）时，将 name 改为相对源码入口：
+#   - insert:
+#       - id: dsh-biz-bridge
+#         name: './src/index.ts'
+- insert:
+    - id: dsh-biz-bridge
+      name: 'dsh-biz-bridge'

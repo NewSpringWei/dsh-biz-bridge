@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-biz-bridge · 接入测试</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="client">
+<header class="site">
+  <span class="brand">dsh-biz-bridge</span>
+  <nav class="main">
+    <a href="index.html">首页</a>
+    <a href="admin.html">管理运维</a>
+    <a href="client.html">接入测试</a>
+    <a href="utils.html">工具</a>
+  </nav>
+  <span class="tag">需业务级 scope 验签</span>
+</header>
+<main>
+  <section class="keybar">
+    <div class="grid2">
+      <div class="field"><label>Base URL（插件前缀）</label><input id="authBaseUrl" value="http://127.0.0.1:3080/bizbridge" autocomplete="off"></div>
+      <div class="field"><label>X-Client-Id（业务级 client，需含 stream/callback scope）</label><input id="authClientId" placeholder="biz-system-a" autocomplete="off"></div>
+      <div class="field" style="grid-column:1/-1">
+        <label>业务级 RSA 私钥（PKCS#8 PEM）</label>
+        <textarea id="authPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+      </div>
+    </div>
+    <span class="hint">私钥仅存于本页内存：不写入 localStorage，F5 刷新即清空。没有密钥？去<a href="utils.html">工具页</a>生成一对。</span>
+  </section>
+
+  <section class="panel" id="comms">
+    <h2>通信接口（stream / callback）</h2>
+    <div class="grid2">
+      <div>
+        <h3>流式 stream —— SSE</h3>
+        <div class="field"><label>session_id</label><input id="sSession" value="sess-1" autocomplete="off"></div>
+        <div class="field"><label>biz_id（每次提交唯一）</label><input id="sBiz" value="REQ-STREAM-1" autocomplete="off"></div>
+        <div class="field"><label>prompt</label><textarea id="sPrompt" rows="4">你好，请用一句话介绍自己。</textarea></div>
+        <div class="field"><label>params（可选 JSON，如 {"model":"deepseek-chat"}）</label><textarea id="sParams" rows="2"></textarea></div>
+        <div class="row">
+          <button id="btnStream" class="primary">开始流式</button>
+          <button id="btnStreamStop" disabled>断开（取消）</button>
+          <button id="btnStreamId" class="small">生成 biz_id</button>
+        </div>
+        <pre class="view" id="sseView">流式内容将实时显示在这里…</pre>
+      </div>
+      <div>
+        <h3>回调 callback —— 入队</h3>
+        <div class="field"><label>session_id</label><input id="cSession" value="sess-1" autocomplete="off"></div>
+        <div class="field"><label>biz_id（每次提交唯一）</label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
+        <div class="field"><label>callback_url（任务完成后插件 POST 到此处）</label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
+        <div class="field"><label>prompt</label><textarea id="cPrompt" rows="3">请做一个简要分析。</textarea></div>
+        <div class="field"><label>params（可选 JSON）</label><textarea id="cParams" rows="2"></textarea></div>
+        <div class="row">
+          <button id="btnCallback" class="primary">提交回调</button>
+          <button id="btnCallbackDup" class="small">同参数重发（幂等 409 演示）</button>
+          <button id="btnCbId" class="small">生成 biz_id</button>
+        </div>
+        <pre class="view" id="cbView">回调入队结果将显示在这里…（再次提交相同 biz_id 会得到 409 DUPLICATE_BIZ_ID）</pre>
+      </div>
+    </div>
+    <p class="msg" id="msgComms"></p>
+  </section>
+
+  <section class="panel" id="mine">
+    <h2>业务级自有任务（只能查看/操作自己的任务）</h2>
+    <div class="row">
+      <button id="btnMine" class="primary">查询我的任务</button>
+      <button id="btnMineNext">下一页</button>
+      <button id="btnMyStats">我的统计</button>
+      <span id="msgMine" class="msg"></span>
+    </div>
+    <table>
+      <thead><tr>
+        <th>task_id</th><th>biz_id</th><th>replay</th><th>session</th><th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
+      </tr></thead>
+      <tbody id="mineRows"><tr><td colspan="9" class="msg">点“查询我的任务”加载（列表将自动追加 client_id = X-Client-Id 过滤）</td></tr></tbody>
+    </table>
+    <pre class="view" id="mineView">详情 / 日志 / 统计响应显示在这里…</pre>
+  </section>
+</main>
+<script src="common.js"></script>
+<script>
+(function (Bridge) {
+  var B = Bridge, $ = B.$, minePage = 1
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  }) }
+  var uuid = function () { return crypto.randomUUID() }
+  function parseParams(raw, label) {
+    if (!raw.trim()) return undefined
+    try { var v = JSON.parse(raw); if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('必须是 JSON 对象'); return v }
+    catch (e) { throw new Error(label + ' 不是合法 JSON 对象：' + e.message) }
+  }
+  function baseBody(id, session, prompt, paramsRaw) {
+    return { biz_id: $('' + id).value.trim(), session_id: $('' + session).value.trim(), prompt: $('' + prompt).value, params: parseParams($('' + paramsRaw).value, 'params') }
+  }
+  function assertId(v) { if (!B.ID_PATTERN.test(v)) throw new Error('id 字段需匹配 1-128 位字母 / 数字 / _ / -（当前: ' + v + '）') }
+
+  $('btnStreamId').onclick = function () { $('sBiz').value = 'REQ-STREAM-' + uuid() }
+  $('btnCbId').onclick = function () { $('cBiz').value = 'REQ-CALLBACK-' + uuid() }
+
+  var activeSse = null
+  $('btnStream').onclick = async function () {
+    var body
+    try {
+      body = baseBody('sBiz', 'sSession', 'sPrompt', 'sParams')
+      assertId(body.biz_id); assertId(body.session_id)
+    } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
+    var view = $('sseView')
+    view.className = 'view'
+    view.textContent = '连接中…（HTTP POST SSE）'
+    $('btnStream').disabled = true
+    $('btnStreamStop').disabled = false
+    if (activeSse) { activeSse.close(); activeSse = null }
+    try {
+      activeSse = B.sseOpen('/api/v1/stream', body, {
+        onFrame: function (frame) {
+          if (frame.event === 'start') {
+            view.textContent = ''
+            appendLine('> start task_id=' + frame.task_id)
+          } else if (frame.event === 'chunk') {
+            appendText(frame.content || '')
+          } else if (frame.event === 'done') {
+            appendLine('\n> done task_id=' + frame.task_id + ' usage=' + (frame.usage ? JSON.stringify(frame.usage) : 'null'))
+            closeSse()
+          } else if (frame.event === 'error') {
+            appendLine('\n> error ' + (frame.reason ? JSON.stringify(frame.reason) : ''))
+            closeSse()
+          } else if (frame.event === 'sse-error') {
+            appendLine('\n> 非 JSON 帧: ' + frame.message)
+          }
+        },
+        onError: function (e) {
+          appendLine('\n> SSE 错误/中断：' + e.message)
+          closeSse()
+        },
+      })
+    } catch (e) { closeSse(); B.showMsg($('msgComms'), String(e), 'err') }
+    function appendLine(text) { view.textContent += text + '\n'; view.scrollTop = view.scrollHeight }
+    function appendText(text) { view.textContent += text; view.scrollTop = view.scrollHeight }
+    function closeSse() { activeSse = null; $('btnStream').disabled = false; $('btnStreamStop').disabled = true }
+  }
+  $('btnStreamStop').onclick = function () {
+    if (activeSse) { activeSse.close(); activeSse = null }
+    var view = $('sseView'); view.textContent += '\n> 已由页面断开（插件端将任务置 cancelled）\n'
+    $('btnStream').disabled = false; $('btnStreamStop').disabled = true
+  }
+
+  async function submitCallback() {
+    var body
+    try {
+      body = baseBody('cBiz', 'cSession', 'cPrompt', 'cParams')
+      assertId(body.biz_id); assertId(body.session_id)
+      body.callback_url = $('cUrl').value.trim()
+      if (!/^https?:\/\//.test(body.callback_url)) throw new Error('callback_url 必须是 http(s) URL')
+    } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
+    try {
+      var r = await B.request('/api/v1/callback', body)
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      B.showResult($('cbView'), r)
+      B.showMsg($('msgComms'), '已入队（task_id=' + (r.data ? r.data.task_id : '') + '）。再用相同 biz_id 提交将得到 409 幂等冲突。', 'ok')
+    } catch (e) { B.showMsg($('msgComms'), String(e), 'err') }
+  }
+  $('btnCallback').onclick = submitCallback
+  $('btnCallbackDup').onclick = function () {
+    B.showMsg($('msgComms'), '用相同参数重发（若上次已成功入队，预期 409 DUPLICATE_BIZ_ID）…', '')
+    submitCallback()
+  }
+
+  // ---------- 业务级自有任务 ----------
+  $('btnMine').onclick = async function () { minePage = 1; await loadMine() }
+  $('btnMineNext').onclick = async function () { minePage++; await loadMine() }
+  async function loadMine() {
+    B.showMsg($('msgMine'), '请求中…', '')
+    try {
+      var r = await B.request('/api/v1/tasks/list', { page: minePage, page_size: 20 })
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      var rows = r.data.tasks.map(function (t) {
+        return '<tr>' +
+          '<td>' + esc(t.task_id.slice(0, 8)) + '</td><td>' + esc(t.biz_id) + '</td><td>' + t.replay_seq + '</td>' +
+          '<td>' + esc(t.session_id.slice(0, 14)) + '</td><td>' + esc(t.type) + '</td><td>' + esc(t.status) + '</td>' +
+          '<td>' + t.priority + '</td><td>' + esc(t.created_at) + '</td>' +
+          '<td><button class="small" data-mine="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
+          '<button class="small" data-mine="logs" data-id="' + esc(t.task_id) + '">日志</button> ' +
+          '<button class="small" data-mine="cancel" data-id="' + esc(t.task_id) + '">取消</button> ' +
+          '<button class="small" data-mine="replay" data-id="' + esc(t.task_id) + '">重播</button></td></tr>'
+      }).join('')
+      $('mineRows').innerHTML = rows || '<tr><td colspan="9" class="msg">无任务</td></tr>'
+      B.showMsg($('msgMine'), '第 ' + r.data.page + ' 页 / 共 ' + r.data.total + ' 条', 'ok')
+    } catch (e) { B.showMsg($('msgMine'), String(e), 'err') }
+  }
+  $('mineRows').onclick = async function (ev) {
+    var button = ev.target.closest ? ev.target.closest('button[data-mine]') : null
+    if (!button) return
+    var id = button.getAttribute('data-id'), act = button.getAttribute('data-mine')
+    if (act === 'cancel' && !window.confirm('确定取消任务 ' + id + ' ？（业务级仅能取消自己 queued/received 的任务）')) return
+    if (act === 'replay' && !window.confirm('确定重播任务 ' + id + ' ？（仅 callback 且非排队状态）')) return
+    try {
+      var path = '/api/v1/tasks/' + encodeURIComponent(id) + (act === 'detail' || act === 'logs' ? (act === 'logs' ? '/logs' : '') : '/' + act)
+      var body = act === 'logs' ? { page: 1, page_size: 50 } : {}
+      var r = await B.request(path, body)
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      B.showResult($('mineView'), r)
+      if (act === 'cancel' || act === 'replay') await loadMine()
+    } catch (e) { B.showMsg($('msgMine'), String(e), 'err') }
+  }
+  $('btnMyStats').onclick = async function () {
+    try {
+      var r = await B.request('/api/v1/stats', {})
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      B.showResult($('mineView'), r)
+    } catch (e) { B.showMsg($('msgMine'), String(e), 'err') }
+  }
+})(window.Bridge)
+</script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+/* dsh-biz-bridge 第一方参考实现 / 开发调试工具 — 共享样式 */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #1f2328; font-size: 14px; }
+h1, h2, h3 { margin: 0; }
+header.site { background: #0b1220; color: #fff; padding: 0 22px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+header.site .brand { padding: 13px 0; font-weight: 700; font-size: 15px; }
+nav.main { display: flex; gap: 2px; }
+nav.main a { color: #c9d1d9; text-decoration: none; padding: 14px 12px; font-size: 13px; border-bottom: 2px solid transparent; }
+nav.main a:hover { color: #fff; }
+nav.main a.active { color: #fff; border-bottom-color: #3fb6ff; }
+header.site .tag { margin-left: auto; font-size: 12px; color: #8b949e; }
+main { max-width: 1180px; margin: 18px auto; padding: 0 18px 40px; }
+.card, section.panel { background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+section.panel > h2 { font-size: 15px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #eef0f2; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.row .field.grow { flex: 1; min-width: 240px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label, label { font-size: 12px; color: #57606a; }
+input, select, textarea { padding: 6px 9px; border: 1px solid #c9ced4; border-radius: 6px; font-size: 13px; font-family: inherit; background: #fff; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #0b69c3; }
+textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; width: 100%; resize: vertical; }
+input.fw { width: 100%; }
+button { padding: 6px 12px; border: 1px solid #c9ced4; border-radius: 6px; background: #fff; color: #1f2328; cursor: pointer; font-size: 13px; }
+button.primary { background: #0b69c3; border-color: #0b69c3; color: #fff; }
+button.primary:hover { filter: brightness(1.1); }
+button.danger { color: #cf222e; border-color: #cf222e; background: #fff; }
+button.small { padding: 3px 8px; font-size: 12px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { border-bottom: 1px solid #eef0f2; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-all; }
+th { color: #57606a; font-weight: 600; background: #f6f8fa; }
+pre.view { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 420px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+pre.view.ok { border-left: 4px solid #2ea043; }
+pre.view.err { border-left: 4px solid #f85149; }
+.msg { font-size: 12px; color: #57606a; }
+.msg.ok { color: #1a7f37; }
+.msg.err { color: #cf222e; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.stat-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.stat-card { flex: 1; min-width: 140px; border: 1px solid #e3e6ea; border-radius: 8px; padding: 10px 12px; }
+.stat-card b { font-size: 20px; display: block; }
+.stat-card span { font-size: 12px; color: #57606a; }
+/* 全局密钥条（仅内存，F5 即丢） */
+section.keybar { background: #fff7e8; border: 1px solid #f0d9a8; border-radius: 10px; padding: 12px 14px; margin: 12px 0; display: grid; gap: 10px; }
+section.keybar .hint { font-size: 12px; color: #9a6700; }
+section.keybar textarea { min-height: 46px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: stretch; }
+.placeholder { border: 1px dashed #c9ced4; border-radius: 8px; color: #8b949e; text-align: center; padding: 22px; font-size: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.tool-card { background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 18px; text-decoration: none; color: inherit; display: block; }
+.tool-card:hover { border-color: #0b69c3; box-shadow: 0 2px 10px rgba(11,105,195,.08); }
+.tool-card h3 { margin: 0 0 6px; }
+.tool-card p { font-size: 12px; color: #57606a; margin: 4px 0; }
+.tool-card .badge { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; margin-bottom: 8px; }
+.badge.signed { background: #ffeef0; color: #cf222e; }
+.badge.free { background: #e6ffec; color: #1a7f37; }
+ul.tight { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+li { margin: 3px 0; }

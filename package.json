@@ -1,0 +1,60 @@
+{
+  "name": "dsh-biz-bridge",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 业务桥接插件 — 让业务系统通过标准 HTTP 协议获得 DSH agent 能力（流式/回调两种响应模式，SQLite 任务队列）",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.mjs",
+    "cordis.patch.yml",
+    "public/static/**",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --out-dir lib --clean --target node22 --no-dts --deps.never-bundle @deepseek-ai/cordis --deps.never-bundle @deepseek-ai/schemastery --deps.never-bundle @deepseek-ai/dsh-agent --deps.never-bundle @deepseek-ai/dsh-session --deps.never-bundle @deepseek-ai/dsh-llm --deps.never-bundle @deepseek-ai/dsh-session-persistence --deps.never-bundle @deepseek-ai/dsh-host-webserver",
+    "release": "node scripts/release.mjs",
+    "test": "node --test --test-isolation=none tests/config.test.ts tests/auth.test.ts tests/db.test.ts tests/ops.test.ts tests/session-bridge.test.ts tests/runner.test.ts"
+  },
+  "keywords": [
+    "dsh",
+    "cordis-plugin",
+    "bridge",
+    "http",
+    "sse",
+    "callback",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/dsh-agent": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.2-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true },
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session-persistence": { "optional": true },
+    "@deepseek-ai/dsh-host-webserver": { "optional": true }
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.2"
+  }
+}

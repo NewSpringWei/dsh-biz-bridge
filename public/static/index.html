@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-biz-bridge · 参考实现 / 调试工具</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-page="index">
+<header class="site">
+  <span class="brand">dsh-biz-bridge</span>
+  <nav class="main">
+    <a href="index.html">首页</a>
+    <a href="admin.html">管理运维</a>
+    <a href="client.html">接入测试</a>
+    <a href="utils.html">工具</a>
+  </nav>
+  <span class="tag">第一方参考实现 · 开发调试工具</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>关于这套页面</h2>
+    <p>这是 <b>dsh-biz-bridge</b> 插件的第一方参考实现，同时可作为开发/联调工具。
+    按使用对象拆成三个页面，覆盖插件的三类接口与一组免鉴权小工具：</p>
+    <ul class="tight">
+      <li><b>管理运维</b>：以管理级 client 调用管理接口（统计 / 任务 / 取消 / 重播 / 优先级）。</li>
+      <li><b>接入测试</b>：以业务级 client 调用通信接口（stream / callback）与业务级自有任务接口。</li>
+      <li><b>工具</b>：浏览器本地生成 RSA 密钥对等免鉴权小工具。</li>
+    </ul>
+  </section>
+
+  <div class="cards">
+    <a class="tool-card" href="admin.html">
+      <span class="badge signed">需验签 · 管理级</span>
+      <h3>管理运维</h3>
+      <p>运行统计、任务列表/详情/日志、取消、重播、优先级调整。</p>
+    </a>
+    <a class="tool-card" href="client.html">
+      <span class="badge signed">需验签 · 业务级</span>
+      <h3>接入测试</h3>
+      <p>流式（SSE）与回调提交、幂等 409 演示、业务级自有任务查看与操作。</p>
+    </a>
+    <a class="tool-card" href="utils.html">
+      <span class="badge free">免验签</span>
+      <h3>工具</h3>
+      <p>RSA-2048 密钥对生成（公钥注册进插件配置 auth.clients）+ 预留小工具位。</p>
+    </a>
+  </div>
+
+  <section class="panel">
+    <h2>密钥与安全说明</h2>
+    <ul class="tight">
+      <li>私钥只粘贴在页面顶部文本框，<b>仅存于内存、不写入 localStorage，F5 刷新即清空</b>；
+          请勿在不可信页面或共享设备上使用。</li>
+      <li>公钥注册进服务端插件配置 <code>auth.clients[].publicKey</code>，scope 由服务端决定。</li>
+      <li>页面为纯静态参考实现：验签在浏览器完成，私钥不会离开你的浏览器。</li>
+    </ul>
+  </section>
+</main>
+<script src="common.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+node_modules/
+lib/
+dist/
+*.tgz
+!release/*.tgz
+.DS_Store
+data/
+*.db
+*.db-shm
+*.db-wal
+.release-staging/

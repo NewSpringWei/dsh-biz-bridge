@@ -16,70 +16,110 @@
   </nav>
   <span class="tag">需业务级 scope 验签</span>
 </header>
-<main>
-  <section class="keybar">
-    <div class="grid2">
-      <div class="field"><label>Base URL（插件前缀）</label><input id="authBaseUrl" value="http://127.0.0.1:3080/bizbridge" autocomplete="off"></div>
-      <div class="field"><label>X-Client-Id（业务级 client，需含 stream/callback scope）</label><input id="authClientId" placeholder="biz-system-a" autocomplete="off"></div>
-      <div class="field" style="grid-column:1/-1">
-        <label>业务级 RSA 私钥（PKCS#8 PEM）</label>
-        <textarea id="authPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
-      </div>
-    </div>
-    <span class="hint">私钥仅存于本页内存：不写入 localStorage，F5 刷新即清空。没有密钥？去<a href="utils.html">工具页</a>生成一对。</span>
-  </section>
 
-  <section class="panel" id="comms">
-    <h2>通信接口（stream / callback）</h2>
-    <div class="grid2">
-      <div>
-        <h3>流式 stream —— SSE</h3>
-        <div class="field"><label>session_id</label><input id="sSession" value="sess-1" autocomplete="off"></div>
-        <div class="field"><label>biz_id（每次提交唯一）</label><input id="sBiz" value="REQ-STREAM-1" autocomplete="off"></div>
-        <div class="field"><label>prompt</label><textarea id="sPrompt" rows="4">你好，请用一句话介绍自己。</textarea></div>
-        <div class="field"><label>params（可选 JSON，如 {"model":"deepseek-chat"}）</label><textarea id="sParams" rows="2"></textarea></div>
-        <div class="row">
-          <button id="btnStream" class="primary">开始流式</button>
-          <button id="btnStreamStop" disabled>断开（取消）</button>
-          <button id="btnStreamId" class="small">生成 biz_id</button>
-        </div>
-        <pre class="view" id="sseView">流式内容将实时显示在这里…</pre>
-      </div>
-      <div>
-        <h3>回调 callback —— 入队</h3>
-        <div class="field"><label>session_id</label><input id="cSession" value="sess-1" autocomplete="off"></div>
-        <div class="field"><label>biz_id（每次提交唯一）</label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
-        <div class="field"><label>callback_url（任务完成后插件 POST 到此处）</label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
-        <div class="field"><label>prompt</label><textarea id="cPrompt" rows="3">请做一个简要分析。</textarea></div>
-        <div class="field"><label>params（可选 JSON）</label><textarea id="cParams" rows="2"></textarea></div>
-        <div class="row">
-          <button id="btnCallback" class="primary">提交回调</button>
-          <button id="btnCallbackDup" class="small">同参数重发（幂等 409 演示）</button>
-          <button id="btnCbId" class="small">生成 biz_id</button>
-        </div>
-        <pre class="view" id="cbView">回调入队结果将显示在这里…（再次提交相同 biz_id 会得到 409 DUPLICATE_BIZ_ID）</pre>
-      </div>
-    </div>
-    <p class="msg" id="msgComms"></p>
-  </section>
+<div class="layout">
+  <!-- 左侧内部导航 -->
+  <aside class="sidebar">
+    <div class="sidebar-title">通信接口</div>
+    <a href="#sec-stream" class="active">流式 stream</a>
+    <a href="#sec-callback">回调 callback</a>
+    <div class="sidebar-title">自有任务</div>
+    <a href="#sec-mine">业务级查询</a>
+  </aside>
 
-  <section class="panel" id="mine">
-    <h2>业务级自有任务（只能查看/操作自己的任务）</h2>
-    <div class="row">
-      <button id="btnMine" class="primary">查询我的任务</button>
-      <button id="btnMineNext">下一页</button>
-      <button id="btnMyStats">我的统计</button>
-      <span id="msgMine" class="msg"></span>
+  <!-- 中间内容区 -->
+  <div class="content">
+    <p class="msg" id="msgComms" style="margin:0 0 10px"></p>
+    <section class="panel" id="sec-stream">
+      <h2>流式 stream —— SSE</h2>
+      <div class="field"><label>session_id</label><input id="sSession" value="sess-1" autocomplete="off"></div>
+      <div class="field"><label>biz_id（每次提交唯一）</label><input id="sBiz" value="REQ-STREAM-1" autocomplete="off"></div>
+      <div class="field"><label>prompt</label><textarea id="sPrompt" rows="4">你好，请用一句话介绍自己。</textarea></div>
+      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModels" class="small" style="margin-left:8px">刷新模型</button></label>
+        <div class="params-form">
+          <div class="row">
+            <div class="field"><label>provider</label><select id="sProvider"><option value="">默认</option></select></div>
+            <div class="field"><label>model</label><select id="sModel"><option value="">默认</option></select></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>reasoningEffort</label><select id="sEffort"><option value="">默认</option></select></div>
+            <div class="field"><label>maxTokens</label><input id="sMaxTokens" type="number" min="1" placeholder="默认"></div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="btnStream" class="primary">开始流式</button>
+        <button id="btnStreamStop" disabled>断开（取消）</button>
+        <button id="btnStreamId" class="small">生成 biz_id</button>
+      </div>
+      <pre class="view" id="sseView">流式内容将实时显示在这里…</pre>
+    </section>
+
+    <section class="panel" id="sec-callback">
+      <h2>回调 callback —— 入队</h2>
+      <div class="field"><label>session_id</label><input id="cSession" value="sess-1" autocomplete="off"></div>
+      <div class="field"><label>biz_id（每次提交唯一）</label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
+      <div class="field"><label>callback_url（任务完成后插件 POST 到此处）</label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
+      <div class="field"><label>prompt</label><textarea id="cPrompt" rows="3">请做一个简要分析。</textarea></div>
+      <div class="field"><label>模型参数（可选，从 DSH 动态读取）</label>
+        <div class="params-form">
+          <div class="row">
+            <div class="field"><label>provider</label><select id="cProvider"><option value="">默认</option></select></div>
+            <div class="field"><label>model</label><select id="cModel"><option value="">默认</option></select></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>reasoningEffort</label><select id="cEffort"><option value="">默认</option></select></div>
+            <div class="field"><label>maxTokens</label><input id="cMaxTokens" type="number" min="1" placeholder="默认"></div>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="btnCallback" class="primary">提交回调</button>
+        <button id="btnCallbackDup" class="small">同参数重发（幂等 409 演示）</button>
+        <button id="btnCbId" class="small">生成 biz_id</button>
+      </div>
+      <pre class="view" id="cbView">回调入队结果将显示在这里…（再次提交相同 biz_id 会得到 409 DUPLICATE_BIZ_ID）</pre>
+    </section>
+
+    <section class="panel" id="sec-mine">
+      <h2>业务级自有任务（只能查看/操作自己的任务）</h2>
+      <div class="row">
+        <button id="btnMine" class="primary">查询我的任务</button>
+        <button id="btnMineNext">下一页</button>
+        <button id="btnMyStats">我的统计</button>
+        <span id="msgMine" class="msg"></span>
+      </div>
+      <table>
+        <thead><tr>
+          <th>task_id</th><th>biz_id</th><th>replay</th><th>session</th><th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
+        </tr></thead>
+        <tbody id="mineRows"><tr><td colspan="9" class="msg">点"查询我的任务"加载（列表将自动追加 client_id = X-Client-Id 过滤）</td></tr></tbody>
+      </table>
+      <pre class="view" id="mineView">详情 / 日志 / 统计响应显示在这里…</pre>
+    </section>
+  </div>
+
+  <!-- 右侧签名栏（固定） -->
+  <div class="auth-right">
+    <div class="auth-card">
+      <h3>🔐 业务级签名</h3>
+      <div class="field">
+        <label>Base URL</label>
+        <input id="authBaseUrl" value="" placeholder="如 http://127.0.0.1:42731/bizbridge" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>X-Client-Id（业务级）</label>
+        <input id="authClientId" placeholder="biz-system-a" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>私钥（PKCS#8 PEM）</label>
+        <textarea id="authPrivateKey" rows="5" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+      </div>
+      <div class="hint">私钥仅存于内存，F5 刷新即清空。<a href="utils.html">去生成密钥对 →</a></div>
     </div>
-    <table>
-      <thead><tr>
-        <th>task_id</th><th>biz_id</th><th>replay</th><th>session</th><th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
-      </tr></thead>
-      <tbody id="mineRows"><tr><td colspan="9" class="msg">点“查询我的任务”加载（列表将自动追加 client_id = X-Client-Id 过滤）</td></tr></tbody>
-    </table>
-    <pre class="view" id="mineView">详情 / 日志 / 统计响应显示在这里…</pre>
-  </section>
-</main>
+  </div>
+</div>
+
 <script src="common.js"></script>
 <script>
 (function (Bridge) {
@@ -88,16 +128,103 @@
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   }) }
   var uuid = function () { return crypto.randomUUID() }
-  function parseParams(raw, label) {
-    if (!raw.trim()) return undefined
-    try { var v = JSON.parse(raw); if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('必须是 JSON 对象'); return v }
-    catch (e) { throw new Error(label + ' 不是合法 JSON 对象：' + e.message) }
+
+  /* ---- 从表单构建 params 对象（空值不传） ---- */
+  function buildParams(prefix) {
+    var p = {}
+    var provider = $(prefix + 'Provider').value.trim()
+    var model = $(prefix + 'Model').value.trim()
+    var effort = $(prefix + 'Effort').value.trim()
+    var maxTokens = $(prefix + 'MaxTokens').value.trim()
+    if (provider) p.provider = provider
+    if (model) p.model = model
+    if (effort) p.reasoningEffort = effort
+    if (maxTokens) p.maxTokens = parseInt(maxTokens, 10)
+    return Object.keys(p).length ? p : undefined
   }
-  function baseBody(id, session, prompt, paramsRaw) {
-    return { biz_id: $('' + id).value.trim(), session_id: $('' + session).value.trim(), prompt: $('' + prompt).value, params: parseParams($('' + paramsRaw).value, 'params') }
+  function baseBody(bizId, session, prompt, prefix) {
+    return { biz_id: $(bizId).value.trim(), session_id: $(session).value.trim(), prompt: $(prompt).value, params: buildParams(prefix) }
   }
   function assertId(v) { if (!B.ID_PATTERN.test(v)) throw new Error('id 字段需匹配 1-128 位字母 / 数字 / _ / -（当前: ' + v + '）') }
 
+  /* ---- 左侧导航：显隐切换 ---- */
+  B.initSidebar('.sidebar', '.content > section.panel')
+
+  /* ---- 模型动态加载 ---- */
+  var modelsData = null  // { providers: [{ id, name, models: [{ id, name }] }] }
+
+  function populateProviderSelect(select, providers) {
+    select.innerHTML = '<option value="">默认</option>'
+    providers.forEach(function (p) {
+      var opt = document.createElement('option')
+      opt.value = p.id; opt.textContent = p.name || p.id
+      select.appendChild(opt)
+    })
+  }
+  function populateModelSelect(select, models) {
+    select.innerHTML = '<option value="">默认</option>'
+    models.forEach(function (m) {
+      var opt = document.createElement('option')
+      opt.value = m.id; opt.textContent = m.name || m.id
+      if (m.description) opt.title = m.description
+      select.appendChild(opt)
+    })
+  }
+  function populateEffortSelect(select, efforts) {
+    select.innerHTML = '<option value="">默认</option>'
+    if (!efforts) return
+    efforts.forEach(function (e) {
+      var opt = document.createElement('option')
+      opt.value = e.id; opt.textContent = e.name || e.id
+      if (e.description) opt.title = e.description
+      select.appendChild(opt)
+    })
+  }
+
+  // provider → model 级联
+  function wireProviderModelEffort(prefix) {
+    var providerSel = $(prefix + 'Provider')
+    var modelSel = $(prefix + 'Model')
+    var effortSel = $(prefix + 'Effort')
+    providerSel.addEventListener('change', function () {
+      var pid = providerSel.value
+      var provider = modelsData && modelsData.providers.find(function (p) { return p.id === pid })
+      populateModelSelect(modelSel, provider ? provider.models : [])
+      effortSel.innerHTML = '<option value="">默认</option>'
+    })
+    modelSel.addEventListener('change', function () {
+      // 根据选中模型的 reasoningEfforts 填充 effort 下拉
+      var pid = providerSel.value
+      var mid = modelSel.value
+      var provider = modelsData && modelsData.providers.find(function (p) { return p.id === pid })
+      var model = provider && provider.models.find(function (m) { return m.id === mid })
+      if (model && model.reasoningEfforts) {
+        populateEffortSelect(effortSel, model.reasoningEfforts)
+      } else {
+        effortSel.innerHTML = '<option value="">默认</option>'
+      }
+    })
+  }
+
+  async function loadModels() {
+    try {
+      var r = await B.request('/api/v1/models', {})
+      if (!r.ok) {
+        B.showMsg($('msgComms'), '模型加载失败：请先在右侧填写签名信息', 'err')
+        return
+      }
+      modelsData = r.data
+      if (!modelsData || !modelsData.providers) return
+      populateProviderSelect($('sProvider'), modelsData.providers)
+      populateProviderSelect($('cProvider'), modelsData.providers)
+      wireProviderModelEffort('s')
+      wireProviderModelEffort('c')
+      B.showMsg($('msgComms'), '模型列表已加载（' + modelsData.providers.length + ' 个 provider）', 'ok')
+    } catch (e) { B.showMsg($('msgComms'), '模型加载失败：' + e.message, 'err') }
+  }
+  $('btnLoadModels').onclick = function () { loadModels() }
+
+  /* ---- 流式 ---- */
   $('btnStreamId').onclick = function () { $('sBiz').value = 'REQ-STREAM-' + uuid() }
   $('btnCbId').onclick = function () { $('cBiz').value = 'REQ-CALLBACK-' + uuid() }
 
@@ -105,7 +232,7 @@
   $('btnStream').onclick = async function () {
     var body
     try {
-      body = baseBody('sBiz', 'sSession', 'sPrompt', 'sParams')
+      body = baseBody('sBiz', 'sSession', 'sPrompt', 's')
       assertId(body.biz_id); assertId(body.session_id)
     } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
     var view = $('sseView')
@@ -121,6 +248,10 @@
             view.textContent = ''
             appendLine('> start task_id=' + frame.task_id)
           } else if (frame.event === 'chunk') {
+            appendText(frame.content || '')
+          } else if (frame.event === 'reasoning') {
+            // 思考过程：灰色斜体显示
+            view.textContent += '\n[思考] '
             appendText(frame.content || '')
           } else if (frame.event === 'done') {
             appendLine('\n> done task_id=' + frame.task_id + ' usage=' + (frame.usage ? JSON.stringify(frame.usage) : 'null'))
@@ -148,10 +279,11 @@
     $('btnStream').disabled = false; $('btnStreamStop').disabled = true
   }
 
+  /* ---- 回调 ---- */
   async function submitCallback() {
     var body
     try {
-      body = baseBody('cBiz', 'cSession', 'cPrompt', 'cParams')
+      body = baseBody('cBiz', 'cSession', 'cPrompt', 'c')
       assertId(body.biz_id); assertId(body.session_id)
       body.callback_url = $('cUrl').value.trim()
       if (!/^https?:\/\//.test(body.callback_url)) throw new Error('callback_url 必须是 http(s) URL')
@@ -169,7 +301,7 @@
     submitCallback()
   }
 
-  // ---------- 业务级自有任务 ----------
+  /* ---- 业务级自有任务 ---- */
   $('btnMine').onclick = async function () { minePage = 1; await loadMine() }
   $('btnMineNext').onclick = async function () { minePage++; await loadMine() }
   async function loadMine() {

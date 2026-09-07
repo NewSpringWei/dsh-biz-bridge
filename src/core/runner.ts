@@ -62,6 +62,8 @@ export interface RunConfig {
   taskId: string
   /** 流式：text-delta 实时转发（SSE）；回调侧不提供。 */
   onTextDelta?: (text: string) => void
+  /** 流式：reasoning-delta 实时转发（思考型模型的推理过程）。 */
+  onReasoningDelta?: (text: string) => void
   /** 每条 assistant/message 收尾时回调（日志/落库）；参数为该消息内文本与 usage。 */
   onAssistantMessage?: (turn: number, text: string, usage: Record<string, unknown> | null) => void
 }
@@ -97,6 +99,8 @@ class ActiveRun {
   agentError: string | undefined
   /** 消息是否已被 claim（≥1 个 user/message 或 inbox/claimed 到达）。 */
   started = false
+  /** 本 turn 是否已收到 text-delta（用于 onAssistantMessage 兜底判断）。 */
+  hasTextDelta = false
 
   private readonly agent: DriveableAgent
   private readonly messageId: string
@@ -137,16 +141,27 @@ class ActiveRun {
       case 'assistant/chunk': {
         if (!inOurTurn) return
         const chunk = payload.chunk
-        if (chunk?.type !== 'text-delta' || typeof chunk.text !== 'string') return
-        this.collected += chunk.text
-        this.config.onTextDelta?.(chunk.text)
+        if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+          this.collected += chunk.text
+          this.hasTextDelta = true
+          this.config.onTextDelta?.(chunk.text)
+        } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+          // 思考型模型的推理过程，作为 reasoning 事件转发
+          this.config.onReasoningDelta?.(chunk.text)
+        }
         return
       }
       case 'assistant/message': {
         if (!inOurTurn) return
         if (payload.usage !== undefined && payload.usage !== null) this.usage = payload.usage
         const text = textOfMessage(payload.message)
-        if (text !== '') this.config.onAssistantMessage?.(payload.turn ?? 0, text, this.usage)
+        if (text !== '') {
+          this.config.onAssistantMessage?.(payload.turn ?? 0, text, this.usage)
+          // 兜底：若模型未产生 text-delta（纯推理模型），在此推送最终文本
+          if (!this.hasTextDelta) {
+            this.config.onTextDelta?.(text)
+          }
+        }
         return
       }
       case 'turn/end': {

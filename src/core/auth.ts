@@ -3,7 +3,7 @@
  *
  * 签名串 = HTTP_METHOD + REQUEST_PATH + X-Timestamp + X-Nonce + SHA256(请求体)
  * X-Signature = base64(RSA-SHA256(私钥, 签名串))
- * 口径（§6.2.2）：REQUEST_PATH 仅 pathname、不含 query；SHA256 输出十六进制小写。
+ * 口径（§6.2.2）：REQUEST_PATH 为完整 pathname（含插件前缀如 /bizbridge/api/v1/stream）、不含 query；SHA256 输出十六进制小写。
  *
  * 验签步骤（§6.2.3）：1 查公钥 → 2 时间戳容差 → 3 nonce 未重用（查询）
  * → 4 用公钥验签 → 通过后才登记 nonce（同步流程内无竞态）。
@@ -41,7 +41,7 @@ export class SignatureVerifier {
    * 验签入口。任一步失败抛 UnauthorizedError（§6.2.3 步骤 1..4）。
    * @param headers 请求头（小写键，node http 解析后的形态）
    * @param method HTTP 方法（大写）
-   * @param pathname 仅 pathname，不含 query
+   * @param pathname 完整 pathname（含插件前缀），不含 query
    * @param rawBody 原始请求体字节（SHA256 对象）
    * @param nonceSeen nonce 防重放存取（has 查询 + store 登记分离，保证验签失败不消耗 nonce）
    */

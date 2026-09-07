@@ -5,18 +5,19 @@
 回调两种响应；`session_id` 复用即多轮上下文，任务调度与日志全由插件落 SQLite。
 
 - **当前版本**：`0.1.0`（草创/早期开发，接口可能调整，暂不建议生产关键链路）
-- **源码即仓库根**：`code/` 下为完整插件工程，代码随便看、随便改。
+- **源码即仓库根**：完整插件工程即本目录，代码随便看、随便改。
 
 ## 目录速览
 
 ```
-code/                        # 本仓库根（可上传 Git）
+.                            # 本仓库根
 ├─ src/                      # 插件源码（入口 src/index.ts）
 ├─ tests/                    # 单元测试（零依赖，npm test 即可跑）
 ├─ docs/                     # 用户文档（本 README 之外都在这）
-│   ├─ building.md           #   打包与本地开发（构建/测试/排错）
-│   └─ config.md             #   配置项、签名协议、HTTP 接口、错误码（详细）
-├─ examples/dsh-profile/     # 独立进程接入示例（cordis.patch.yml + 启动脚本）
+│   ├─ building.md           #   源码构建、测试、开发调试
+│   ├─ config.md             #   配置与部署（字段参考 + 部署步骤 + FAQ）
+│   ├─ api.md                #   HTTP 接入（签名协议 + 接口定义 + 错误码）
+│   └─ cordis.patch.yml      #   配置样例（直接复制到 profile 使用）
 ├─ release/                  # 发布产物（dsh-biz-bridge-0.1.0.tgz + CHANGELOG）
 └─ public/static/            # 随插件分发的参考工具页（管理员/接入测试/密钥工具）
 ```
@@ -45,7 +46,7 @@ dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.0.tgz
 
 **第三步 · 写一次 profile 配置**
 
-把 [`examples/dsh-profile/cordis.patch.yml`](examples/dsh-profile/cordis.patch.yml)
+把 [`docs/cordis.patch.yml`](docs/cordis.patch.yml)
 的内容放到 `$DSH_HOME/profiles/bizbridge/cordis.patch.yml`，替换其中的公钥占位符
 （用插件自带工具页生成）并按需改端口（示例 `42731`）。
 
@@ -61,15 +62,16 @@ dsh --profile bizbridge
 
 > 常规用法就是上面这条独立进程路径：它和你的 web/GUI 互不干扰，改/重启它都不会
 > 中断正在跑的 web 会话。把插件并入其它 profile 只是开发联调的可选路径，细节见
-> [`examples/dsh-profile/README.md`](examples/dsh-profile/README.md)。
+> [`docs/config.md`](docs/config.md)。
 
 ## 详细文档（子文档）
 
 | 想看什么 | 去哪 |
 |----------|------|
-| 打包、测试、如何在本机 DSH 工程里开发调试 | [`docs/building.md`](docs/building.md) |
-| 配置项全量参考、签名算法、HTTP 接口与错误码 | [`docs/config.md`](docs/config.md) |
-| 独立 profile 完整接入示例（含启动脚本/排错） | [`examples/dsh-profile/`](examples/dsh-profile/) |
+| 源码构建、测试、开发调试 | [`docs/building.md`](docs/building.md) |
+| 配置与部署（字段参考 + 部署步骤 + FAQ） | [`docs/config.md`](docs/config.md) |
+| HTTP 接入：签名协议、接口定义、错误码 | [`docs/api.md`](docs/api.md) |
+| 配置样例（直接复制到 profile 使用） | [`docs/cordis.patch.yml`](docs/cordis.patch.yml) |
 | 版本历史与发布说明 | [`release/CHANGELOG.md`](release/CHANGELOG.md) |
 
 ## License

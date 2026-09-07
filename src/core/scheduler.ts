@@ -15,6 +15,7 @@
 
 import { parseAgentOverridesLenient } from './agent-options.ts'
 import { CwdMismatchError, SessionBusyError } from '../shared/errors.ts'
+import { externalSessionId } from '../shared/session-id.ts'
 import { nowIso } from './db.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import type { RunOutcome, TaskRow } from '../shared/types.ts'
@@ -83,6 +84,7 @@ export class CallbackScheduler {
       if (this.delivering.has(row.id)) break // 在途，下轮再试
       this.delivering.add(row.id)
       delivered++
+      this.runtime.fileLogger.info('scheduler', `delivery candidate task=${row.id}`)
       void this.attemptDeliver(row).finally(() => this.delivering.delete(row.id))
     }
   }
@@ -112,6 +114,7 @@ export class CallbackScheduler {
           this.runtime.db.failTask(chosen.id, `回调任务执行异常：${message}`, nowIso())
           this.runtime.db.addLog(chosen.id, 'failed', `回调任务执行异常：${message}`, {}, nowIso())
           this.runtime.logger.error(`callback task ${chosen.id} crashed: ${message}`)
+          this.runtime.fileLogger.error('scheduler', `callback task ${chosen.id} crashed: ${message}`)
         })
         .finally(() => {
           this.running.delete(chosen.id)
@@ -126,10 +129,12 @@ export class CallbackScheduler {
     const fresh = db.getTask(row.id)
     if (fresh === undefined || fresh.status !== 'processing') {
       logger.info(`callback task ${row.id} skipped: status changed before execution (${fresh?.status ?? 'gone'})`)
+      this.runtime.fileLogger.info('scheduler', `callback task ${row.id} skipped`, { status: fresh?.status ?? 'gone' })
       return
     }
     const agentOptions = parseAgentOverridesLenient(row.params)
     logger.info(`callback task ${row.id} claimed, session=${row.session_id}`)
+    this.runtime.fileLogger.info('scheduler', `callback task ${row.id} claimed`, { sessionId: row.session_id, bizId: row.biz_id })
 
     // openAgent（§5.2.1）。会话忙/配置性错误按执行失败落库，避免队列毒化。
     let agent
@@ -143,6 +148,7 @@ export class CallbackScheduler {
       db.failTask(row.id, detail, nowIso())
       db.addLog(row.id, 'failed', detail, { reason: 'openAgent' }, nowIso())
       logger.warn(`callback task ${row.id} openAgent failed: ${message}`)
+      this.runtime.fileLogger.warn('scheduler', `callback task ${row.id} openAgent failed: ${message}`)
       return
     }
 
@@ -168,17 +174,20 @@ export class CallbackScheduler {
 
   /** 结局落库（终态守卫：SQL WHERE status 层保证不覆盖并发取消）。 */
   private settleOutcome(row: TaskRow, outcome: RunOutcome): void {
-    const { db } = this.runtime
+    const { db, fileLogger } = this.runtime
     const now = nowIso()
     if (outcome.kind === 'completed') {
       db.completeTask(row.id, { result: outcome.result, usage: outcome.usage, isCallback: true, now })
       db.addLog(row.id, 'completed', '任务完成', { usage: outcome.usage ?? undefined }, now)
+      fileLogger.info('scheduler', `callback task ${row.id} completed`, { usage: outcome.usage ?? undefined })
     } else if (outcome.kind === 'failed') {
       db.failTask(row.id, outcome.message, now)
       db.addLog(row.id, 'failed', outcome.message, { reason: outcome.reason }, now)
+      fileLogger.error('scheduler', `callback task ${row.id} failed: ${outcome.message}`)
     } else {
       db.cancelTask(row.id, outcome.message, now, ['processing'])
       db.addLog(row.id, 'cancelled', outcome.message, {}, now)
+      fileLogger.info('scheduler', `callback task ${row.id} cancelled: ${outcome.message}`)
     }
   }
 
@@ -213,6 +222,7 @@ export class CallbackScheduler {
       : `回调失败（HTTP ${result.httpStatus ?? 'N/A'}${result.detail !== undefined ? `: ${result.detail}` : ''}），将${nextStatus === 'exhausted' ? '超过重试上限' : '按策略重试'}`
     db.addLog(row.id, 'callback', detail, { attempt: attempts, http_status: result.httpStatus ?? null, next_status: nextStatus }, nowIso())
     logger.info(`callback delivery task=${row.id} attempt=${attempts} ok=${result.ok} next=${nextStatus}`)
+    this.runtime.fileLogger.info('scheduler', `callback delivery task=${row.id}`, { attempt: attempts, ok: result.ok, httpStatus: result.httpStatus ?? null, nextStatus })
   }
 
   /** 组装 §6.4.3 回调体。 */
@@ -222,7 +232,7 @@ export class CallbackScheduler {
       task_id: row.id,
       biz_id: row.biz_id,
       replay_seq: row.replay_seq,
-      session_id: row.session_id,
+      session_id: externalSessionId(row.session_id),
       type: 'callback',
       status: 'completed',
       result: row.result,

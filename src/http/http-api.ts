@@ -19,6 +19,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { ForbiddenError, NotFoundError } from '../shared/errors.ts'
+import { internalSessionId } from '../shared/session-id.ts'
 import { parseJsonBody, readBody, sendError, writeJson } from './http-util.ts'
 import {
   cancelOp, detailOp, listOp, logsOp, priorityOp, replayOp, statsOp,
@@ -72,29 +73,61 @@ function serveStatic(runtime: BridgeRuntime, req: IncomingMessage, res: ServerRe
     writeJson(res, 404, { error: { code: 'NOT_FOUND', message: `static asset not found: ${name}`, details: {} } })
     return true
   }
-  res.writeHead(200, { 'content-type': contentTypeOf(name) })
+  res.writeHead(200, {
+    'content-type': contentTypeOf(name),
+    'cache-control': 'no-cache',
+  })
   if (req.method === 'GET') res.end(body)
   else res.end()
   return true
+}
+
+/** 脱敏：移除/截断敏感字段。 */
+function sanitizeHeaders(headers: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase()
+    if (lk === 'x-signature') { out[k] = '***'; continue }
+    if (lk === 'cookie') { out[k] = '***'; continue }
+    out[k] = v
+  }
+  return out
+}
+
+function sanitizeBody(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(body)) {
+    if (k === 'publicKey' || k === 'privateKey') { out[k] = '***'; continue }
+    if (k === 'prompt' && typeof v === 'string') { out[k] = v.length > 50 ? v.slice(0, 50) + '…' : v; continue }
+    out[k] = v
+  }
+  return out
 }
 
 /** 完整处理器（注册为 /bizbridge 前缀路由）。 */
 export function createBridgeHandler(runtime: BridgeRuntime) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const pathname = pathnameOf(req)
+    const clientId = (req.headers['x-client-id'] as string) ?? '-'
+    // 入口即记录（无论签名成败）
+    runtime.fileLogger.info('http', `>>> ${req.method} ${pathname}`, { clientId })
     try {
       // 第一方参考/调试页面（GET/HEAD，免签名）
       if (serveStatic(runtime, req, res, pathname)) return
       // 其余全部 POST + 签名
       if (req.method !== 'POST') {
+        runtime.fileLogger.warn('http', `method not allowed: ${req.method}`, { pathname })
         writeJson(res, 404, { error: { code: 'NOT_FOUND', message: `route not found: ${req.method} ${pathname}`, details: {} } })
         return
       }
       const rawBody = await readBody(req)
       const caller = runtime.verifier.verify(req.headers, 'POST', pathname, rawBody, runtime.nonceSeen)
       const body = parseJsonBody(rawBody)
+      runtime.fileLogger.info('http', `<<< ${req.method} ${pathname} OK`, { clientId: caller.clientId, scope: caller.scope })
       await dispatch(runtime, caller, pathname, body, res)
     } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      runtime.fileLogger.error('http', `<<< ${pathname} FAIL`, { clientId, error: msg })
       sendError(res, error)
     }
   }
@@ -108,12 +141,14 @@ async function dispatch(
   body: Record<string, unknown>,
   res: ServerResponse,
 ): Promise<void> {
-  const { db } = runtime
+  const { db, fileLogger } = runtime
   if (pathname === '/bizbridge/api/v1/stream') {
+    fileLogger.info('stream', `submit by ${caller.clientId}`, { sessionId: body.session_id, bizId: body.biz_id })
     await handleStreamSubmit(runtime, caller, body, res)
     return
   }
   if (pathname === '/bizbridge/api/v1/callback') {
+    fileLogger.info('callback', `submit by ${caller.clientId}`, { sessionId: body.session_id, bizId: body.biz_id })
     enqueueCallback(runtime, caller, body, res)
     return
   }
@@ -123,6 +158,11 @@ async function dispatch(
   }
   if (pathname === '/bizbridge/api/v1/stats') {
     writeJson(res, 200, statsOp(db, caller))
+    return
+  }
+  if (pathname === '/bizbridge/api/v1/models') {
+    fileLogger.info('models', `query by ${caller.clientId}`)
+    writeJson(res, 200, await modelsOp(runtime))
     return
   }
   // /bizbridge/api/v1/tasks/<id>[/logs|cancel|replay|priority]
@@ -139,10 +179,12 @@ async function dispatch(
       return
     }
     if (action === 'replay') {
+      fileLogger.info('replay', `task ${taskId} by ${caller.clientId}`)
       writeJson(res, 200, replayOp(db, taskId, caller))
       return
     }
     if (action === 'priority') {
+      fileLogger.info('priority', `task ${taskId} by ${caller.clientId}`, { priority: body.priority })
       writeJson(res, 200, priorityOp(db, taskId, caller, body.priority))
       return
     }
@@ -153,6 +195,7 @@ async function dispatch(
       if (task.client_id !== caller.clientId && !caller.scope.includes('admin')) {
         throw new ForbiddenError(`task "${taskId}" belongs to another client`)
       }
+      fileLogger.info('cancel', `task ${taskId} by ${caller.clientId}`, { sessionId: task.session_id, status: task.status })
       const result = cancelOp(db, taskId, caller)
       if (result.needAgentCancel) {
         const cancelled = runtime.hub.cancel(task.session_id, `admin cancelled task ${taskId}`)
@@ -169,6 +212,51 @@ async function dispatch(
   throw new NotFoundError(`route not found: ${pathname}`)
 }
 
+/** 查询可用模型列表：从 DSH LLM 运行时读取 provider → model → reasoning efforts。 */
+async function modelsOp(runtime: BridgeRuntime): Promise<Record<string, unknown>> {
+  const providers = runtime.llm.listProviders()
+  const result: Array<Record<string, unknown>> = []
+  for (const provider of providers) {
+    let models: Array<Record<string, unknown>> = []
+    try {
+      const rawModels = await runtime.llm.listModels(provider.id)
+      for (const m of rawModels) {
+        const model: Record<string, unknown> = {
+          id: m.id,
+          name: m.name,
+          description: m.description ?? null,
+          inputModalities: m.inputModalities ?? null,
+          reasoningEfforts: null,
+          defaultMaxTokens: null,
+        }
+        // 尝试获取模型详情（reasoning efforts + maxTokens）
+        try {
+          const info = await runtime.llm.resolveModelInfo(provider.id, m.id)
+          if (info.reasoning?.efforts) {
+            model.reasoningEfforts = info.reasoning.efforts.map(e => ({
+              id: e.id,
+              name: e.name,
+              description: e.description ?? null,
+            }))
+          }
+          if (info.defaultMaxTokens !== undefined) {
+            model.defaultMaxTokens = info.defaultMaxTokens
+          }
+        } catch { /* 单模型查询失败不影响整体 */ }
+        models.push(model)
+      }
+    } catch {
+      // adapter 不可用或查询失败，跳过该 provider 的模型
+    }
+    result.push({
+      id: provider.id,
+      name: provider.name,
+      models,
+    })
+  }
+  return { providers: result }
+}
+
 /** 回调响应入队（§3.2 / §6.4.2）：立即返回 task_id + queued。 */
 function enqueueCallback(
   runtime: BridgeRuntime,
@@ -177,6 +265,7 @@ function enqueueCallback(
   res: ServerResponse,
 ): void {
   const input = validateSubmitInput(caller, 'callback', body)
+  const sid = internalSessionId(input.clientId, input.sessionId)
   const now = nowIso()
   const taskId = randomUUID()
   runtime.db.createTask({
@@ -184,7 +273,7 @@ function enqueueCallback(
     clientId: input.clientId,
     bizId: input.bizId,
     replaySeq: 0,
-    sessionId: input.sessionId,
+    sessionId: sid,
     prompt: input.prompt,
     type: 'callback',
     params: input.params,
@@ -193,7 +282,7 @@ function enqueueCallback(
     scheduledAt: now,
     now,
   })
-  runtime.db.addLog(taskId, 'received', '回调任务已入队', { biz_id: input.bizId, session_id: input.sessionId }, now)
+  runtime.db.addLog(taskId, 'received', '回调任务已入队', { biz_id: input.bizId, session_id: sid }, now)
   writeJson(res, 200, {
     task_id: taskId,
     status: 'queued',

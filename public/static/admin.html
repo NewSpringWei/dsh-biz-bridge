@@ -16,54 +16,75 @@
   </nav>
   <span class="tag">需管理级 scope 验签</span>
 </header>
-<main>
-  <section class="keybar">
-    <div class="grid2">
-      <div class="field"><label>Base URL（插件前缀）</label><input id="authBaseUrl" value="http://127.0.0.1:3080/bizbridge" autocomplete="off"></div>
-      <div class="field"><label>X-Client-Id（管理级 client）</label><input id="authClientId" placeholder="admin-ops" autocomplete="off"></div>
-      <div class="field" style="grid-column:1/-1">
-        <label>管理级 RSA 私钥（PKCS#8 PEM）</label>
-        <textarea id="authPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+
+<div class="layout">
+  <!-- 左侧内部导航 -->
+  <aside class="sidebar">
+    <div class="sidebar-title">功能区</div>
+    <a href="#sec-stats" class="active">运行统计</a>
+    <a href="#sec-tasks">任务列表</a>
+    <a href="#sec-detail">详情 / 日志</a>
+  </aside>
+
+  <!-- 中间内容区 -->
+  <div class="content">
+    <section class="panel" id="sec-stats">
+      <h2>运行统计 <button id="btnStats" class="primary">刷新统计</button> <span id="msgStats" class="msg"></span></h2>
+      <div class="stat-cards" id="statCards"><span class="msg">点击"刷新统计"</span></div>
+    </section>
+
+    <section class="panel" id="sec-tasks">
+      <h2>任务列表（管理级可见全部 client）</h2>
+      <div class="row">
+        <div class="field"><label>状态</label>
+          <select id="fStatus"><option value="">全部</option><option>queued</option><option>received</option><option>processing</option><option>completed</option><option>failed</option><option>callback_failed</option><option>cancelled</option></select></div>
+        <div class="field"><label>类型</label>
+          <select id="fType"><option value="">全部</option><option>stream</option><option>callback</option></select></div>
+        <div class="field"><label>client_id</label><input id="fClient" placeholder="可选"></div>
+        <div class="field"><label>biz_id</label><input id="fBiz" placeholder="可选"></div>
+        <div class="field"><label>起止（YYYY-MM-DD）</label>
+          <input id="fStart" placeholder="开始日期" style="width:130px">
+          <input id="fEnd" placeholder="结束日期" style="width:130px"></div>
+        <button id="btnList" class="primary">查询</button>
+        <button id="btnNext">下一页</button>
+        <span id="msgList" class="msg"></span>
       </div>
+      <table>
+        <thead><tr>
+          <th>task_id</th><th>client</th><th>biz_id</th><th>replay</th><th>session</th>
+          <th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
+        </tr></thead>
+        <tbody id="taskRows"><tr><td colspan="10" class="msg">点"查询"加载</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="sec-detail">
+      <h2>详情 / 日志</h2>
+      <pre class="view" id="respView">选择任务后点"详情 / 日志"，或在此查看最近一次操作响应。</pre>
+    </section>
+  </div>
+
+  <!-- 右侧签名栏（固定） -->
+  <div class="auth-right">
+    <div class="auth-card">
+      <h3>🔐 管理级签名</h3>
+      <div class="field">
+        <label>Base URL</label>
+        <input id="authBaseUrl" value="" placeholder="如 http://127.0.0.1:42731/bizbridge" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>X-Client-Id（管理级）</label>
+        <input id="authClientId" placeholder="admin-ops" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>私钥（PKCS#8 PEM）</label>
+        <textarea id="authPrivateKey" rows="5" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+      </div>
+      <div class="hint">私钥仅存于内存，F5 刷新即清空。<a href="utils.html">去生成密钥对 →</a></div>
     </div>
-    <span class="hint">私钥仅存于本页内存：不写入 localStorage，F5 刷新即清空。本页所有请求共用这份凭证。</span>
-  </section>
+  </div>
+</div>
 
-  <section class="panel" id="panel-stats">
-    <h2>运行统计 <button id="btnStats" class="primary">刷新统计</button> <span id="msgStats" class="msg"></span></h2>
-    <div class="stat-cards" id="statCards"><span class="msg">点击“刷新统计”</span></div>
-  </section>
-
-  <section class="panel" id="panel-tasks">
-    <h2>任务列表（管理级可见全部 client）</h2>
-    <div class="row">
-      <div class="field"><label>状态</label>
-        <select id="fStatus"><option value="">全部</option><option>queued</option><option>received</option><option>processing</option><option>completed</option><option>failed</option><option>callback_failed</option><option>cancelled</option></select></div>
-      <div class="field"><label>类型</label>
-        <select id="fType"><option value="">全部</option><option>stream</option><option>callback</option></select></div>
-      <div class="field"><label>client_id</label><input id="fClient" placeholder="可选"></div>
-      <div class="field"><label>biz_id</label><input id="fBiz" placeholder="可选"></div>
-      <div class="field"><label>起止（YYYY-MM-DD）</label>
-        <input id="fStart" placeholder="开始日期" style="width:130px">
-        <input id="fEnd" placeholder="结束日期" style="width:130px"></div>
-      <button id="btnList" class="primary">查询</button>
-      <button id="btnNext">下一页</button>
-      <span id="msgList" class="msg"></span>
-    </div>
-    <table>
-      <thead><tr>
-        <th>task_id</th><th>client</th><th>biz_id</th><th>replay</th><th>session</th>
-        <th>type</th><th>status</th><th>priority</th><th>创建时间</th><th>操作</th>
-      </tr></thead>
-      <tbody id="taskRows"><tr><td colspan="10" class="msg">点“查询”加载</td></tr></tbody>
-    </table>
-  </section>
-
-  <section class="panel" id="panel-detail">
-    <h2>详情 / 日志</h2>
-    <pre class="view" id="respView">选择任务后点“详情 / 日志”，或在此查看最近一次操作响应。</pre>
-  </section>
-</main>
 <script src="common.js"></script>
 <script>
 (function (Bridge) {
@@ -82,6 +103,9 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   }) }
+
+  /* ---- 左侧导航：显隐切换 ---- */
+  B.initSidebar('.sidebar', '.content > section.panel')
 
   $('btnStats').onclick = async function () {
     B.showMsg($('msgStats'), '请求中…', '')
@@ -164,7 +188,6 @@
     } catch (e) { B.showMsg($('msgList'), String(e), 'err') }
   }
 
-  // 点击 task_id 快捷查看详情
   document.addEventListener('click', function (ev) {
     var anchor = ev.target.closest ? ev.target.closest('a.taskId') : null
     if (anchor) viewTask(anchor.getAttribute('data-id'), 'detail')

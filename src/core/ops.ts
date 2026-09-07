@@ -14,6 +14,7 @@ import {
   NotFoundError,
   TaskRunningError,
 } from '../shared/errors.ts'
+import { externalSessionId } from '../shared/session-id.ts'
 import type { Caller } from './auth.ts'
 import type { NewTaskInput, TaskRow, TaskStatus, TaskType } from '../shared/types.ts'
 
@@ -155,7 +156,7 @@ function summarize(task: TaskRow): Record<string, unknown> {
     client_id: task.client_id,
     biz_id: task.biz_id,
     replay_seq: task.replay_seq,
-    session_id: task.session_id,
+    session_id: externalSessionId(task.session_id),
     type: task.type,
     status: task.status,
     priority: task.priority,
@@ -172,7 +173,7 @@ export function detailOp(db: BridgeDb, taskId: string, caller: Caller): Record<s
     client_id: task.client_id,
     biz_id: task.biz_id,
     replay_seq: task.replay_seq,
-    session_id: task.session_id,
+    session_id: externalSessionId(task.session_id),
     type: task.type,
     status: task.status,
     prompt: task.prompt,

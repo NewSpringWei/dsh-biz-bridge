@@ -16,53 +16,70 @@
   </nav>
   <span class="tag">免验签</span>
 </header>
-<main>
-  <section class="panel">
-    <h2>RSA-2048 密钥对生成</h2>
-    <p class="msg">浏览器本地生成签名密钥对（不依赖服务器）。输入要注册的 Client-Id，输出公钥与私钥：
-    <b>公钥</b>注册进服务端插件配置 <code>auth.clients[].publicKey</code>；<b>私钥</b>只留在本机，
-    交给对应工具/客户端使用，切勿外传或提交到代码仓库。</p>
-    <div class="row">
-      <div class="field grow"><label>目标 Client-Id</label>
-        <input id="genClientId" placeholder="biz-system-a / admin-ops" autocomplete="off"></div>
-      <button id="btnGen" class="primary">生成 RSA-2048 密钥对</button>
-    </div>
-    <div class="grid2" style="margin-top:12px">
-      <div class="field"><label>公钥（SPKI PEM → 服务端 auth.clients[].publicKey）</label>
-        <textarea id="genPublic" rows="8" readonly placeholder="点击生成…"></textarea>
-        <div><button id="copyPublic" class="small">复制公钥</button></div>
-      </div>
-      <div class="field"><label>私钥（PKCS#8 PEM → 工具 / 客户端私钥）</label>
-        <textarea id="genPrivate" rows="8" readonly placeholder="点击生成…"></textarea>
-        <div><button id="copyPrivate" class="small">复制私钥</button></div>
-      </div>
-    </div>
-    <p class="msg" id="genMsg"></p>
-  </section>
 
-  <section class="panel">
-    <h2>时间转换（开发调试常用）</h2>
-    <div class="grid2">
-      <div class="field"><label>Unix 时间戳（秒）→ ISO 时间</label>
-        <input id="tEpoch" placeholder="如 1750000000">
-        <button id="btnToIso" class="small">转换</button>
-        <input id="outIso" readonly placeholder="结果"></div>
-      <div class="field"><label>ISO 时间 → Unix 时间戳（秒）</label>
-        <input id="tIso" placeholder="如 2026-09-04T10:00:00.000Z">
-        <button id="btnToEpoch" class="small">转换</button>
-        <input id="outEpoch" readonly placeholder="结果"></div>
-    </div>
-  </section>
+<div class="layout two-col">
+  <!-- 左侧内部导航 -->
+  <aside class="sidebar">
+    <div class="sidebar-title">工具</div>
+    <a href="#sec-keygen" class="active">密钥对生成</a>
+    <a href="#sec-time">时间转换</a>
+    <a href="#sec-placeholder">预留位</a>
+  </aside>
 
-  <section class="panel">
-    <h2>预留小工具位</h2>
-    <div class="placeholder">后续的免鉴权小工具可加在这里（与密钥工具一样只放在本页、不需要验签）。</div>
-  </section>
-</main>
+  <!-- 内容区 -->
+  <div class="content">
+    <section class="panel" id="sec-keygen">
+      <h2>RSA-2048 密钥对生成</h2>
+      <p class="msg">浏览器本地生成签名密钥对（不依赖服务器）。输入要注册的 Client-Id，输出公钥与私钥：
+      <b>公钥</b>注册进服务端插件配置 <code>auth.clients[].publicKey</code>；<b>私钥</b>只留在本机，
+      交给对应工具/客户端使用，切勿外传或提交到代码仓库。</p>
+      <div class="row">
+        <div class="field grow"><label>目标 Client-Id</label>
+          <input id="genClientId" placeholder="biz-system-a / admin-ops" autocomplete="off"></div>
+        <button id="btnGen" class="primary">生成 RSA-2048 密钥对</button>
+      </div>
+      <div class="grid2" style="margin-top:12px">
+        <div class="field"><label>公钥（SPKI PEM → 服务端 auth.clients[].publicKey）</label>
+          <textarea id="genPublic" rows="8" readonly placeholder="点击生成…"></textarea>
+          <div><button id="copyPublic" class="small">复制公钥</button></div>
+        </div>
+        <div class="field"><label>私钥（PKCS#8 PEM → 工具 / 客户端私钥）</label>
+          <textarea id="genPrivate" rows="8" readonly placeholder="点击生成…"></textarea>
+          <div><button id="copyPrivate" class="small">复制私钥</button></div>
+        </div>
+      </div>
+      <p class="msg" id="genMsg"></p>
+    </section>
+
+    <section class="panel" id="sec-time">
+      <h2>时间转换（开发调试常用）</h2>
+      <div class="grid2">
+        <div class="field"><label>Unix 时间戳（秒）→ ISO 时间</label>
+          <input id="tEpoch" placeholder="如 1750000000">
+          <button id="btnToIso" class="small">转换</button>
+          <input id="outIso" readonly placeholder="结果"></div>
+        <div class="field"><label>ISO 时间 → Unix 时间戳（秒）</label>
+          <input id="tIso" placeholder="如 2026-09-04T10:00:00.000Z">
+          <button id="btnToEpoch" class="small">转换</button>
+          <input id="outEpoch" readonly placeholder="结果"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="sec-placeholder">
+      <h2>预留小工具位</h2>
+      <div class="placeholder">后续的免鉴权小工具可加在这里（与密钥工具一样只放在本页、不需要验签）。</div>
+    </section>
+  </div>
+</div>
+
 <script src="common.js"></script>
 <script>
 (function (Bridge) {
   var B = Bridge, $ = B.$
+
+  /* ---- 左侧导航：显隐切换 ---- */
+  B.initSidebar('.sidebar', '.content > section.panel')
+
   function msg(text, kind) { B.showMsg($('genMsg'), text, kind) }
   $('btnGen').onclick = async function () {
     var clientId = $('genClientId').value.trim()

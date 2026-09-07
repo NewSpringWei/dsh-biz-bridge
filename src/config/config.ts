@@ -41,11 +41,15 @@ export interface ResolvedConfig {
     /** SSE keepalive 注释行间隔（秒），设计 §6.4.1 默认 15。 */
     sseKeepalive: number
   }
+  logging: {
+    /** 运行日志目录（绝对路径；相对路径按进程 cwd 解析）。 */
+    path: string
+  }
 }
 
 /** 全部缺省值（设计 §8.3）。 */
 export const DEFAULTS = {
-  database: { path: './data/dsh_bridge.db', journalMode: 'WAL', busyTimeout: 5000 },
+  database: { path: './data/dsh_biz_bridge.db', journalMode: 'WAL', busyTimeout: 5000 },
   auth: { timestampWindow: 300, nonceCacheSize: 10000, clients: [] },
   scheduler: {
     pollInterval: 2,
@@ -56,6 +60,7 @@ export const DEFAULTS = {
   },
   agent: { idleTimeout: 10 },
   http: { sseKeepalive: 15 },
+  logging: { path: './logs' },
 } as const
 
 /** 合法 scope 集合。 */
@@ -71,6 +76,7 @@ export type RawConfig = Partial<{
   scheduler: Partial<ResolvedConfig['scheduler']>
   agent: Partial<ResolvedConfig['agent']>
   http: Partial<ResolvedConfig['http']>
+  logging: Partial<ResolvedConfig['logging']>
 }>
 
 function isPositiveInt(value: unknown, name: string): asserts value is number {
@@ -141,5 +147,10 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     throw new Error('dsh-biz-bridge: config http.sseKeepalive must be a positive safe integer')
   }
 
-  return { database, auth: { timestampWindow, nonceCacheSize, clients }, scheduler, agent, http }
+  const logging = { path: input.logging?.path ?? DEFAULTS.logging.path }
+  if (typeof logging.path !== 'string' || logging.path.trim() === '') {
+    throw new Error('dsh-biz-bridge: config logging.path must be a non-empty string')
+  }
+
+  return { database, auth: { timestampWindow, nonceCacheSize, clients }, scheduler, agent, http, logging }
 }

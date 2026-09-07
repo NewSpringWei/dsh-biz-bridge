@@ -10,7 +10,9 @@
 (function (window, document) {
   'use strict'
 
-  var DEFAULT_BASE_URL = 'http://127.0.0.1:3080/bizbridge'
+  var DEFAULT_BASE_URL = (typeof window !== 'undefined' && window.location)
+    ? window.location.origin + '/bizbridge'
+    : 'http://127.0.0.1:42731/bizbridge'
   var ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 
   function $(id) { return document.getElementById(id) }
@@ -85,10 +87,19 @@
     }
   }
 
+  /** 从 baseUrl + path 提取完整 pathname（用于签名串）。 */
+  function fullPathname(baseUrl, path) {
+    try {
+      var base = new URL(baseUrl)
+      // path 以 / 开头时 new URL 会覆盖而非拼接，需手动拼接 base.pathname
+      return path.charAt(0) === '/' ? base.pathname.replace(/\/$/, '') + path : path
+    } catch { return path }
+  }
+
   /** 常规 JSON 请求：返回 { httpStatus, ok, data, text }（不抛业务错误）。 */
   async function request(path, bodyObj) {
     var a = assertAuth()
-    var headers = await makeHeaders('POST', path, bodyObj)
+    var headers = await makeHeaders('POST', fullPathname(a.baseUrl, path), bodyObj)
     var response = await fetch(a.baseUrl + path, {
       method: 'POST',
       headers: headers,
@@ -128,7 +139,7 @@
       try {
         response = await fetch(a.baseUrl + path, {
           method: 'POST',
-          headers: await makeHeaders('POST', path, bodyObj),
+          headers: await makeHeaders('POST', fullPathname(a.baseUrl, path), bodyObj),
           body: JSON.stringify(bodyObj),
           signal: controller.signal,
         })
@@ -241,6 +252,41 @@
     }
   }
 
+  /**
+   * 侧栏显隐切换（sidebar + section 面板联动）。
+   * @param {string} sidebarSelector  侧栏容器选择器（默认 '.sidebar'）
+   * @param {string} sectionSelector  内容区面板选择器（默认 '.content > section.panel'）
+   */
+  function initSidebar(sidebarSelector, sectionSelector) {
+    var sidebar = document.querySelector(sidebarSelector || '.sidebar')
+    if (!sidebar) return
+    var links = sidebar.querySelectorAll('a[href^="#"]')
+    var sections = document.querySelectorAll(sectionSelector || '.content > section.panel')
+    if (!links.length || !sections.length) return
+
+    // 隐藏所有面板，显示第一个
+    function showSection(id) {
+      for (var i = 0; i < sections.length; i++) {
+        sections[i].style.display = sections[i].id === id ? '' : 'none'
+      }
+      for (var j = 0; j < links.length; j++) {
+        links[j].classList.toggle('active', links[j].getAttribute('href') === '#' + id)
+      }
+    }
+
+    // 默认显示第一个
+    var firstId = links[0].getAttribute('href').slice(1)
+    showSection(firstId)
+
+    // 点击切换
+    sidebar.addEventListener('click', function (ev) {
+      var link = ev.target.closest ? ev.target.closest('a[href^="#"]') : null
+      if (!link) return
+      ev.preventDefault()
+      showSection(link.getAttribute('href').slice(1))
+    })
+  }
+
   window.Bridge = {
     DEFAULT_BASE_URL: DEFAULT_BASE_URL,
     ID_PATTERN: ID_PATTERN,
@@ -257,6 +303,7 @@
     copyText: copyText,
     pemWrap: pemWrap,
     initNav: initNav,
+    initSidebar: initSidebar,
   }
 
   if (document.readyState === 'loading') {

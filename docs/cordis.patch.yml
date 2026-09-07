@@ -38,10 +38,10 @@
     database:
       # SQLite 绝对路径（推荐；插件会自动创建父目录）。
       #   Linux（服务器）：
-      #     path: /var/lib/dsh-bizbridge/data/dsh_bridge.db
+      #     path: /var/lib/dsh-bizbridge/runtime/data/dsh-biz-bridge.db
       #   Windows（本地开发，盘符按需）：
-      #     path: D:/dsh-bizbridge/data/dsh_bridge.db
-      path: /var/lib/dsh-bizbridge/data/dsh_bridge.db
+      #     path: E:/dsh-biz-bridge/runtime/data/dsh-biz-bridge.db
+      path: E:/dsh-biz-bridge/runtime/data/dsh-biz-bridge.db
       journalMode: "WAL"
       busyTimeout: 5000
     auth:
@@ -70,3 +70,5 @@
       retryInterval: 30
     agent:
       idleTimeout: 10
+    logging:
+      path: E:/dsh-biz-bridge/runtime/logs  # 运行日志目录，按天轮转

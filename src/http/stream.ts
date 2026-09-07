@@ -20,6 +20,7 @@ import type { BridgeRuntime } from '../shared/runtime.ts'
 import type { Caller } from '../core/auth.ts'
 import { nowIso } from '../core/db.ts'
 import { validateSubmitInput } from '../core/submission.ts'
+import { internalSessionId } from '../shared/session-id.ts'
 import type { TaskRow } from '../shared/types.ts'
 
 const SSE_KEEPALIVE_MS = 15_000
@@ -64,8 +65,10 @@ export async function handleStreamSubmit(
   const { db } = runtime
   // 1. 校验 + 会话忙预检 → 409（不入库；同 session 已有进行中任务，§5.8）
   const input = validateSubmitInput(caller, 'stream', body)
-  const busy = busyPrecheck(runtime, input.sessionId)
+  const sid = internalSessionId(input.clientId, input.sessionId)
+  const busy = busyPrecheck(runtime, sid)
   if (busy !== undefined) {
+    runtime.fileLogger.warn('stream', `session busy: ${busy}`, { sessionId: sid })
     sendError(res, new SessionBusyError(busy))
     return
   }
@@ -77,7 +80,7 @@ export async function handleStreamSubmit(
     clientId: input.clientId,
     bizId: input.bizId,
     replaySeq: 0,
-    sessionId: input.sessionId,
+    sessionId: sid,
     prompt: input.prompt,
     type: 'stream',
     params: input.params,
@@ -85,12 +88,14 @@ export async function handleStreamSubmit(
     scheduledAt: now,
     now,
   })
-  db.addLog(taskId, 'received', '流式任务已接收', { biz_id: input.bizId, session_id: input.sessionId }, now)
+  db.addLog(taskId, 'received', '流式任务已接收', { biz_id: input.bizId, session_id: sid }, now)
+  runtime.fileLogger.info('stream', `task ${taskId} created`, { bizId: input.bizId, sessionId: sid, clientId: input.clientId })
 
   // 3. openAgent（§5.2.1）；失败按“入库后失败兜底”落终态
   let agent
   try {
-    agent = await runtime.pool.openAgent(input.sessionId, input.agentOverrides)
+    agent = await runtime.pool.openAgent(sid, input.agentOverrides)
+    runtime.fileLogger.info('stream', `task ${taskId} agent opened`, { sessionId: sid })
   } catch (error: unknown) {
     if (error instanceof SessionBusyError) {
       finalizePreExecutionFailure(runtime, row, 'cancelled', `会话忙，任务放弃：${error.message}`)
@@ -121,6 +126,7 @@ export async function handleStreamSubmit(
 
   // 5. SSE 通道（断连即取消）
   beginSse(res)
+  runtime.fileLogger.info('stream', `task ${taskId} SSE started`)
   let settled = false
   let clientGone = false
   let keepalive: ReturnType<typeof setInterval> | undefined
@@ -138,7 +144,7 @@ export async function handleStreamSubmit(
     const message = '客户端断开连接，任务已取消'
     const cancelled = db.cancelTask(taskId, message, nowIso(), ['processing'])
     if (cancelled > 0) db.addLog(taskId, 'cancelled', message, { reason: 'disconnect' })
-    runtime.hub.cancel(input.sessionId, 'client disconnected')
+    runtime.hub.cancel(sid, 'client disconnected')
     runtime.logger.info(`stream task ${taskId} cancelled on client disconnect`)
   })
 
@@ -147,13 +153,16 @@ export async function handleStreamSubmit(
 
   // 6. 驱动 turn：session/event → SSE chunk 实时转发；每 assistant/message 落一条日志
   const outcome = await runtime.hub.runTurn({
-    sessionId: input.sessionId,
+    sessionId: sid,
     taskId,
     prompt: input.prompt,
     agent,
     messageFactory: runtime.messageFactory,
     onTextDelta: (text: string) => {
       sseData(res, { event: 'chunk', content: text })
+    },
+    onReasoningDelta: (text: string) => {
+      sseData(res, { event: 'reasoning', content: text })
     },
     onAssistantMessage: (turn: number, text: string, usage: Record<string, unknown> | null) => {
       db.addLog(taskId, 'chunk', text, { turn, usage: usage ?? undefined })
@@ -166,16 +175,19 @@ export async function handleStreamSubmit(
   if (outcome.kind === 'completed') {
     db.completeTask(taskId, { result: outcome.result, usage: outcome.usage, isCallback: false, now: endTime })
     db.addLog(taskId, 'completed', '任务完成', { usage: outcome.usage ?? undefined }, endTime)
+    runtime.fileLogger.info('stream', `task ${taskId} completed`, { usage: outcome.usage ?? undefined })
     if (!clientGone) sseData(res, { event: 'done', task_id: taskId, usage: outcome.usage ?? null })
   } else if (outcome.kind === 'failed') {
     db.failTask(taskId, outcome.message, endTime)
     db.addLog(taskId, 'failed', outcome.message, { reason: outcome.reason }, endTime)
+    runtime.fileLogger.error('stream', `task ${taskId} failed: ${outcome.message}`)
     if (!clientGone) {
       sseData(res, { event: 'error', task_id: taskId, reason: outcome.reason ?? { kind: 'error', message: outcome.message } })
     }
   } else {
     db.cancelTask(taskId, outcome.message, endTime, ['processing'])
     db.addLog(taskId, 'cancelled', outcome.message, {}, endTime)
+    runtime.fileLogger.info('stream', `task ${taskId} cancelled: ${outcome.message}`)
     if (!clientGone) {
       sseData(res, { event: 'error', task_id: taskId, reason: { kind: 'aborted', message: outcome.message } })
     }

@@ -9,12 +9,37 @@ import { BridgeDb } from '../core/db.ts'
 import { AgentPool, type SessionGateway } from '../core/session-bridge.ts'
 import { RunHub } from '../core/runner.ts'
 import type { TextMessageFactory } from './types.ts'
+import type { FileLogger } from '../core/logger.ts'
 
 /** 日志最小面（真实实现 ctx.logger）。 */
 export interface LoggerLike {
   info(message: string, ...args: unknown[]): void
   warn(message: string, ...args: unknown[]): void
   error(message: string, ...args: unknown[]): void
+}
+
+/** LLM 能力查询最小面（真实实现 ctx.llm）。 */
+export interface LlmLike {
+  listProviders(): Array<{ id: string; name: string }>
+  listModels(provider: string): Promise<Array<{
+    provider: string
+    id: string
+    name: string
+    description?: string
+    inputModalities?: readonly string[]
+  }>>
+  resolveModelInfo(provider: string, model: string): Promise<{
+    provider: string
+    id: string
+    name: string
+    description?: string
+    context?: { contextWindow: number }
+    defaultMaxTokens?: number
+    reasoning?: {
+      efforts: Array<{ id: string; name: string; description?: string }>
+      defaultEffort?: string
+    }
+  }>
 }
 
 /**
@@ -34,6 +59,8 @@ export interface BridgeRuntime {
   verifier: SignatureVerifier
   nonceSeen: NonceSeen
   logger: LoggerLike
+  llm: LlmLike
+  fileLogger: FileLogger
   /** 第一方参考/调试页面静态资源（index/admin/client/utils + common.js + style.css）。 */
   staticFiles: StaticFiles
 }

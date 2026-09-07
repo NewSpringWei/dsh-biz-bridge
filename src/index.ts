@@ -29,6 +29,7 @@ import type { LoggerLike } from './shared/runtime.ts'
 import { AgentPool } from './core/session-bridge.ts'
 import { RunHub, type SessionEventLike } from './core/runner.ts'
 import { CallbackScheduler } from './core/scheduler.ts'
+import { FileLogger } from './core/logger.ts'
 
 /** 配置 schema 的 TS 接口（设计 §8.1 的扁平形态）。 */
 export interface Config {
@@ -37,15 +38,16 @@ export interface Config {
   scheduler?: RawConfig['scheduler']
   agent?: RawConfig['agent']
   http?: RawConfig['http']
+  logging?: RawConfig['logging']
 }
 
 /** 配置 schema：缺省值与 config.ts DEFAULTS 保持一致（双源防漂移注释）。 */
 export const Config: z<Config> = z.object({
   database: z.object({
-    path: z.string().default('./data/dsh_bridge.db'),
+    path: z.string().default('./data/dsh_biz_bridge.db'),
     journalMode: z.string().default('WAL'),
     busyTimeout: z.natural().default(5000),
-  }).default({ path: './data/dsh_bridge.db', journalMode: 'WAL', busyTimeout: 5000 }),
+  }).default({ path: './data/dsh_biz_bridge.db', journalMode: 'WAL', busyTimeout: 5000 }),
   auth: z.object({
     timestampWindow: z.natural().default(300),
     nonceCacheSize: z.natural().min(100).default(10000),
@@ -68,6 +70,9 @@ export const Config: z<Config> = z.object({
   http: z.object({
     sseKeepalive: z.natural().min(1).default(15),
   }).default({ sseKeepalive: 15 }),
+  logging: z.object({
+    path: z.string().default('./logs'),
+  }).default({ path: './logs' }),
 })
 
 /** 回收扫描周期（秒）。 */
@@ -76,7 +81,7 @@ const REAP_INTERVAL_SECONDS = 30
 export const name = 'dsh-biz-bridge'
 
 /** 真实 DSH host 上存在的注入服务（见文件头注释，timer 不注入）。 */
-export const inject = ['agents', 'sessions', 'sessionPersistence', 'webServer']
+export const inject = ['agents', 'sessions', 'sessionPersistence', 'webServer', 'llm']
 
 export function apply(ctx: Context, rawConfig: Config): void {
   // 1. 配置归一化（defense-in-depth；schema 已做缺省化）
@@ -113,6 +118,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const nonceSeen = new NonceCache(config.auth.nonceCacheSize, config.auth.timestampWindow)
 
   // 5. 调度器（§7）
+  const fileLogger = new FileLogger(config.logging.path)
+  fileLogger.info('startup', 'plugin activating', { config: skipSecrets(config) as Record<string, unknown> })
   const runtime = {
     config,
     db,
@@ -123,6 +130,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     verifier,
     nonceSeen,
     logger,
+    llm: ctx.llm,
+    fileLogger,
     staticFiles: loadStaticFiles((message) => logger.info(message)),
   }
   const scheduler = new CallbackScheduler(runtime)
@@ -153,6 +162,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     }),
     'dsh-biz-bridge: /bizbridge route',
   )
+  fileLogger.info('startup', 'HTTP route registered', { prefix: '/bizbridge' })
 
   // 8. 调度轮询（§7.2：effect 包裹的受管 setInterval）
   ctx.effect(() => {
@@ -169,6 +179,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
       const reaped = pool.reapIdle()
       if (reaped.length > 0) {
         logger.info(`reaped ${reaped.length} idle agent(s): ${reaped.map(r => r.sessionId).join(', ')}`)
+        fileLogger.info('reaper', `reaped ${reaped.length} idle agent(s)`, { sessionIds: reaped.map(r => r.sessionId) })
       }
     }, REAP_INTERVAL_SECONDS * 1000)
     timer.unref?.()
@@ -178,6 +189,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   // 10. 卸载清理：取消活动 turn → dispose 全部 handle → 关闭数据库
   ctx.effect(() => {
     return () => {
+      fileLogger.info('startup', 'plugin unloading, cancelling all activities')
       hub.cancelAll('plugin unloading')
       void (async () => {
         try {
@@ -207,6 +219,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     // webServer 尚未就绪时跳过入口打印，不影响插件功能
   }
   say('activated')
+  fileLogger.info('startup', 'plugin activated')
 }
 
 /** 日志脱敏（不打印公钥/私钥等）。 */

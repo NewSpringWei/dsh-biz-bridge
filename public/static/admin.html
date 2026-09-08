@@ -24,6 +24,7 @@
     <a href="#sec-stats" class="active">运行统计</a>
     <a href="#sec-tasks">任务列表</a>
     <a href="#sec-detail">详情 / 日志</a>
+    <a href="#sec-session">会话消息</a>
   </aside>
 
   <!-- 中间内容区 -->
@@ -61,6 +62,20 @@
     <section class="panel" id="sec-detail">
       <h2>详情 / 日志</h2>
       <pre class="view" id="respView">选择任务后点"详情 / 日志"，或在此查看最近一次操作响应。</pre>
+    </section>
+
+    <section class="panel" id="sec-session">
+      <h2>会话消息查询 <span id="msgSession" class="msg"></span></h2>
+      <div class="row">
+        <div class="field"><label>Session ID</label>
+          <input id="fSessionId" placeholder="如 biz-system-a:sess-1" style="width:300px"></div>
+        <div class="field"><label>页码</label>
+          <input id="fSessionPage" type="number" value="1" min="1" style="width:60px"></div>
+        <div class="field"><label>每页</label>
+          <input id="fSessionSize" type="number" value="50" min="1" max="100" style="width:60px"></div>
+        <button id="btnSession" class="primary">查询会话</button>
+      </div>
+      <pre class="view" id="sessionView">输入 Session ID 后点"查询会话"查看对话内容。</pre>
     </section>
   </div>
 
@@ -192,6 +207,40 @@
     var anchor = ev.target.closest ? ev.target.closest('a.taskId') : null
     if (anchor) viewTask(anchor.getAttribute('data-id'), 'detail')
   })
+
+  /* ---- 会话消息查询 ---- */
+  $('btnSession').onclick = async function () {
+    var sid = $('fSessionId').value.trim()
+    if (!sid) { B.showMsg($('msgSession'), '请输入 Session ID', 'err'); return }
+    B.showMsg($('msgSession'), '请求中…', '')
+    try {
+      var r = await B.request('/api/v1/sessions/' + encodeURIComponent(sid) + '/messages', {
+        page: parseInt($('fSessionPage').value, 10) || 1,
+        page_size: parseInt($('fSessionSize').value, 10) || 50,
+      })
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      renderSessionMessages(r.data)
+      B.showMsg($('msgSession'), '共 ' + r.data.total + ' 条消息', 'ok')
+    } catch (e) { B.showMsg($('msgSession'), String(e), 'err') }
+  }
+  function renderSessionMessages(d) {
+    var el = $('sessionView')
+    if (!d.messages || d.messages.length === 0) {
+      el.textContent = '该会话无消息记录。'
+      return
+    }
+    var lines = []
+    for (var i = 0; i < d.messages.length; i++) {
+      var m = d.messages[i]
+      var role = m.role === 'user' ? '👤 user' : '🤖 assistant'
+      var ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : ''
+      var usage = m.usage ? ' [tokens: ' + (m.usage.totalTokens || '?') + ']' : ''
+      lines.push('── ' + role + ' ' + ts + usage + ' ──')
+      lines.push(m.content)
+      lines.push('')
+    }
+    el.textContent = lines.join('\n')
+  }
 })(window.Bridge)
 </script>
 </body>

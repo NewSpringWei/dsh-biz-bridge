@@ -17,6 +17,7 @@ import {
 import { externalSessionId } from '../shared/session-id.ts'
 import type { Caller } from './auth.ts'
 import type { NewTaskInput, TaskRow, TaskStatus, TaskType } from '../shared/types.ts'
+import type { SessionQueryLike } from '../shared/runtime.ts'
 
 export function isAdmin(caller: Caller): boolean {
   return caller.scope.includes('admin')
@@ -168,6 +169,7 @@ function summarize(task: TaskRow): Record<string, unknown> {
 /** 任务详情（§6.5.2）。 */
 export function detailOp(db: BridgeDb, taskId: string, caller: Caller): Record<string, unknown> {
   const task = requireTaskOwned(db, taskId, caller)
+  const result = db.getTaskResult(taskId)
   return {
     task_id: task.id,
     client_id: task.client_id,
@@ -179,7 +181,7 @@ export function detailOp(db: BridgeDb, taskId: string, caller: Caller): Record<s
     prompt: task.prompt,
     params: task.params === null ? null : JSON.parse(task.params),
     callback_url: task.callback_url,
-    result: task.result,
+    result,
     error_message: task.error_message,
     retry_count: task.retry_count,
     priority: task.priority,
@@ -332,4 +334,90 @@ export function statsOp(db: BridgeDb, caller: Caller): Record<string, unknown> {
     queue: { queued: s.queue.queued, processing: s.queue.processing },
     callback: { callback_failed: s.callback.callback_failed, avg_retry_count: Number(s.callback.avg_retry_count.toFixed(2)) },
   }
+}
+
+/**
+ * 会话消息查询（按 session_id 投影对话内容）。
+ * 从 DSH sessionQuery 服务读取完整事件流，过滤并转换为业务友好的消息格式。
+ */
+export async function sessionMessagesOp(
+  sessionQuery: SessionQueryLike,
+  sessionId: string,
+  caller: Caller,
+  body: Record<string, unknown>,
+): Promise<{
+  session_id: string
+  total: number
+  page: number
+  page_size: number
+  messages: Array<Record<string, unknown>>
+}> {
+  if (!isAdmin(caller)) {
+    throw new ForbiddenError('scope "admin" is required for session message queries')
+  }
+  const { page, pageSize } = resolvePage(body.page, body.page_size)
+
+  const snapshot = await sessionQuery.readSession(sessionId)
+  const messages = projectMessages(snapshot.events)
+
+  const total = messages.length
+  const offset = (page - 1) * pageSize
+  const paged = messages.slice(offset, offset + pageSize)
+
+  return {
+    session_id: sessionId,
+    total,
+    page,
+    page_size: pageSize,
+    messages: paged,
+  }
+}
+
+/** 从 SessionEvent[] 投影出用户/助手消息列表。 */
+function projectMessages(
+  events: Array<{ type: string; data?: unknown; seq?: number }>,
+): Array<Record<string, unknown>> {
+  const messages: Array<Record<string, unknown>> = []
+  for (const event of events) {
+    if (event.type === 'user/message') {
+      const data = (event.data ?? {}) as { message?: unknown; time?: number }
+      const text = extractTextContent(data.message)
+      if (text !== '') {
+        messages.push({
+          role: 'user',
+          content: text,
+          seq: event.seq ?? null,
+          timestamp: data.time ?? null,
+        })
+      }
+    } else if (event.type === 'assistant/message') {
+      const data = (event.data ?? {}) as { message?: unknown; usage?: Record<string, unknown>; time?: number }
+      const text = extractTextContent(data.message)
+      if (text !== '') {
+        messages.push({
+          role: 'assistant',
+          content: text,
+          usage: data.usage ?? null,
+          seq: event.seq ?? null,
+          timestamp: data.time ?? null,
+        })
+      }
+    }
+  }
+  return messages
+}
+
+/** 从消息 content 数组中提取纯文本。 */
+function extractTextContent(message: unknown): string {
+  if (typeof message !== 'object' || message === null) return ''
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return ''
+  let text = ''
+  for (const block of content) {
+    if (typeof block === 'object' && block !== null && (block as { type?: string }).type === 'text') {
+      const value = (block as { text?: unknown }).text
+      if (typeof value === 'string') text += value
+    }
+  }
+  return text
 }

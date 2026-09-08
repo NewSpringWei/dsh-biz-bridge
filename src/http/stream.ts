@@ -65,7 +65,7 @@ export async function handleStreamSubmit(
   const { db } = runtime
   // 1. 校验 + 会话忙预检 → 409（不入库；同 session 已有进行中任务，§5.8）
   const input = validateSubmitInput(caller, 'stream', body)
-  const sid = internalSessionId(input.clientId, input.sessionId)
+  const sid = internalSessionId(input.clientId, input.sessionId, 'stream')
   const busy = busyPrecheck(runtime, sid)
   if (busy !== undefined) {
     runtime.fileLogger.warn('stream', `session busy: ${busy}`, { sessionId: sid })

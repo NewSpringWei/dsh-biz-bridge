@@ -59,9 +59,9 @@
       <h2>回调 callback —— 入队</h2>
       <div class="field"><label>session_id</label><input id="cSession" value="sess-1" autocomplete="off"></div>
       <div class="field"><label>biz_id（每次提交唯一）</label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
-      <div class="field"><label>callback_url（任务完成后插件 POST 到此处）</label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
+      <div class="field"><label>callback_url（任务完成后插件 POST 到此处）<button id="btnCbTestUrl" class="small" style="margin-left:8px">填入测试接收地址</button></label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
       <div class="field"><label>prompt</label><textarea id="cPrompt" rows="3">请做一个简要分析。</textarea></div>
-      <div class="field"><label>模型参数（可选，从 DSH 动态读取）</label>
+      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModelsCb" class="small" style="margin-left:8px">刷新模型</button></label>
         <div class="params-form">
           <div class="row">
             <div class="field"><label>provider</label><select id="cProvider"><option value="">默认</option></select></div>
@@ -79,6 +79,13 @@
         <button id="btnCbId" class="small">生成 biz_id</button>
       </div>
       <pre class="view" id="cbView">回调入队结果将显示在这里…（再次提交相同 biz_id 会得到 409 DUPLICATE_BIZ_ID）</pre>
+      <div id="cbTracker" style="display:none;margin-top:10px">
+        <div class="row">
+          <span id="cbTaskId" class="tag"></span>
+          <span id="cbStatus" class="msg">等待中…</span>
+        </div>
+        <pre class="view" id="cbResultView">等待回调到达…</pre>
+      </div>
     </section>
 
     <section class="panel" id="sec-mine">
@@ -223,6 +230,7 @@
     } catch (e) { B.showMsg($('msgComms'), '模型加载失败：' + e.message, 'err') }
   }
   $('btnLoadModels').onclick = function () { loadModels() }
+  $('btnLoadModelsCb').onclick = function () { loadModels() }
 
   /* ---- 流式 ---- */
   $('btnStreamId').onclick = function () { $('sBiz').value = 'REQ-STREAM-' + uuid() }
@@ -280,7 +288,14 @@
   }
 
   /* ---- 回调 ---- */
+  var cbPollTimer = null
+  $('btnCbTestUrl').onclick = function () {
+    var a = B.auth()
+    $('cUrl').value = a.baseUrl + '/api/v1/callback-test/receive'
+    B.showMsg($('msgComms'), '已填入测试接收地址', 'ok')
+  }
   async function submitCallback() {
+    if (cbPollTimer) { clearInterval(cbPollTimer); cbPollTimer = null }
     var body
     try {
       body = baseBody('cBiz', 'cSession', 'cPrompt', 'c')
@@ -288,12 +303,49 @@
       body.callback_url = $('cUrl').value.trim()
       if (!/^https?:\/\//.test(body.callback_url)) throw new Error('callback_url 必须是 http(s) URL')
     } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
+    // 如果 callback_url 指向测试接收端点，启动追踪
+    var isTestUrl = body.callback_url.indexOf('/api/v1/callback-test/receive') >= 0
+    if (isTestUrl) {
+      $('cbTracker').style.display = ''
+      $('cbResultView').textContent = '等待回调到达…'
+      $('cbStatus').textContent = '已提交，等待执行…'
+      $('cbStatus').className = 'msg'
+    }
     try {
       var r = await B.request('/api/v1/callback', body)
       if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
       B.showResult($('cbView'), r)
-      B.showMsg($('msgComms'), '已入队（task_id=' + (r.data ? r.data.task_id : '') + '）。再用相同 biz_id 提交将得到 409 幂等冲突。', 'ok')
+      var taskId = r.data ? r.data.task_id : ''
+      B.showMsg($('msgComms'), '已入队（task_id=' + taskId + '）。再用相同 biz_id 提交将得到 409 幂等冲突。', 'ok')
+      if (isTestUrl && taskId) startCbPoll(taskId)
     } catch (e) { B.showMsg($('msgComms'), String(e), 'err') }
+  }
+  function startCbPoll(taskId) {
+    if (cbPollTimer) clearInterval(cbPollTimer)
+    $('cbTaskId').textContent = 'task: ' + taskId.slice(0, 12) + '…'
+    var attempts = 0
+    cbPollTimer = setInterval(async function () {
+      attempts++
+      if (attempts > 120) {
+        clearInterval(cbPollTimer); cbPollTimer = null
+        $('cbStatus').textContent = '轮询超时（4 分钟），任务可能排队中或失败'
+        $('cbStatus').className = 'msg err'
+        return
+      }
+      try {
+        var r = await B.request('/api/v1/callback-test/' + encodeURIComponent(taskId), {})
+        if (!r.ok) return
+        var d = r.data
+        if (!d.received) {
+          $('cbStatus').textContent = '等待中…（' + attempts + '）'
+          return
+        }
+        clearInterval(cbPollTimer); cbPollTimer = null
+        $('cbStatus').textContent = '✅ 回调已到达 (' + d.received_at + ')'
+        $('cbStatus').className = 'msg ok'
+        $('cbResultView').textContent = B.fmtJson(d.raw_body)
+      } catch (e) { /* 继续轮询 */ }
+    }, 2000)
   }
   $('btnCallback').onclick = submitCallback
   $('btnCallbackDup').onclick = function () {

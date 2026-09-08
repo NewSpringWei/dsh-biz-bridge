@@ -36,7 +36,6 @@ export interface Config {
   database?: RawConfig['database']
   auth?: RawConfig['auth']
   scheduler?: RawConfig['scheduler']
-  agent?: RawConfig['agent']
   http?: RawConfig['http']
   logging?: RawConfig['logging']
 }
@@ -64,9 +63,6 @@ export const Config: z<Config> = z.object({
     maxRetry: z.natural().default(3),
     retryInterval: z.natural().min(1).default(30),
   }).default({ pollInterval: 2, maxConcurrency: 5, callbackTimeout: 30, maxRetry: 3, retryInterval: 30 }),
-  agent: z.object({
-    idleTimeout: z.natural().default(10),
-  }).default({ idleTimeout: 10 }),
   http: z.object({
     sseKeepalive: z.natural().min(1).default(15),
   }).default({ sseKeepalive: 15 }),
@@ -75,13 +71,10 @@ export const Config: z<Config> = z.object({
   }).default({ path: './logs' }),
 })
 
-/** 回收扫描周期（秒）。 */
-const REAP_INTERVAL_SECONDS = 30
-
 export const name = 'dsh-biz-bridge'
 
 /** 真实 DSH host 上存在的注入服务（见文件头注释，timer 不注入）。 */
-export const inject = ['agents', 'sessions', 'sessionPersistence', 'webServer', 'llm']
+export const inject = ['agents', 'sessions', 'sessionPersistence', 'webServer', 'llm', 'sessionQuery']
 
 export function apply(ctx: Context, rawConfig: Config): void {
   // 1. 配置归一化（defense-in-depth；schema 已做缺省化）
@@ -99,17 +92,21 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
   say(`activating with config ${JSON.stringify(skipSecrets(config))}`)
 
-  // 2. 存储层 + 激活时救援（§7.3）
+  // 2. 存储层 + 激活时救援（§7.3）+ 过期数据清理
   const db = openBridgeDb(config.database)
   rescueProcessing(db, (message) => logger.info(message))
+  const cleaned = db.cleanupExpired()
+  if (cleaned > 0) {
+    logger.info(`cleaned up ${cleaned} expired task(s) (retention: 90 days)`)
+    fileLogger.info('cleanup', `cleaned ${cleaned} expired tasks`)
+  }
 
   // 3. 会话桥接层（§5.2）与事件归约 hub（§5.5）
   const gateway = createSessionGateway(ctx)
-  const pool = new AgentPool(gateway, config.agent.idleTimeout)
+  const pool = new AgentPool(gateway)
   const hub = new RunHub({
     begin: (sessionId) => pool.beginActivity(sessionId),
     end: (sessionId) => pool.endActivity(sessionId),
-    touch: (sessionId) => pool.touch(sessionId),
   })
   const messageFactory = createTextMessageFactory()
 
@@ -131,6 +128,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     nonceSeen,
     logger,
     llm: ctx.llm,
+    sessionQuery: ctx.get('sessionQuery'),
     fileLogger,
     staticFiles: loadStaticFiles((message) => logger.info(message)),
   }
@@ -141,16 +139,12 @@ export function apply(ctx: Context, rawConfig: Config): void {
   ctx.on('session/event', (session, event: SessionEventLike) => {
     const sessionId = session.header.id
     hub.onSessionEvent(sessionId, event)
-    pool.touch(sessionId)
   })
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }: { agent: { session: { id: string } }; message: { id: string }; turn: number }) => {
     hub.onMessageClaimed(agent.session.id, message.id, turn)
   })
   ctx.on('agent/error', ({ agent, error }: { agent: { session: { id: string } }; error: unknown }) => {
     hub.onAgentError(agent.session.id, error)
-  })
-  ctx.on('agent/disposed', ({ agent }: { agent: { session: { id: string } } }) => {
-    pool.pruneDisposed(agent.session.id)
   })
 
   // 7. HTTP 路由（§6.1 prefix 路由 + 静态管理页，effect 包裹）
@@ -173,36 +167,30 @@ export function apply(ctx: Context, rawConfig: Config): void {
     return () => clearInterval(timer)
   }, 'dsh-biz-bridge: scheduler pump')
 
-  // 9. 空闲回收（§5.2.2）
+  // 9. 卸载清理：取消活动 turn → 关闭数据库
   ctx.effect(() => {
+    const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
     const timer = setInterval(() => {
-      const reaped = pool.reapIdle()
-      if (reaped.length > 0) {
-        logger.info(`reaped ${reaped.length} idle agent(s): ${reaped.map(r => r.sessionId).join(', ')}`)
-        fileLogger.info('reaper', `reaped ${reaped.length} idle agent(s)`, { sessionIds: reaped.map(r => r.sessionId) })
+      const cleaned = db.cleanupExpired()
+      if (cleaned > 0) {
+        logger.info(`daily cleanup: removed ${cleaned} expired task(s)`)
+        fileLogger.info('cleanup', `daily cleanup: removed ${cleaned} expired tasks`)
       }
-    }, REAP_INTERVAL_SECONDS * 1000)
+    }, CLEANUP_INTERVAL_MS)
     timer.unref?.()
     return () => clearInterval(timer)
-  }, 'dsh-biz-bridge: agent reaper')
+  }, 'dsh-biz-bridge: daily cleanup')
 
-  // 10. 卸载清理：取消活动 turn → dispose 全部 handle → 关闭数据库
+  // 10. 卸载清理：取消活动 turn → 关闭数据库
   ctx.effect(() => {
     return () => {
       fileLogger.info('startup', 'plugin unloading, cancelling all activities')
       hub.cancelAll('plugin unloading')
-      void (async () => {
-        try {
-          await pool.disposeAll()
-        } catch (error: unknown) {
-          logger.warn(`agent disposal during unload failed: ${(error as Error).message}`)
-        }
-        try {
-          db.close()
-        } catch {
-          // already closed
-        }
-      })()
+      try {
+        db.close()
+      } catch {
+        // already closed
+      }
     }
   }, 'dsh-biz-bridge: teardown')
 

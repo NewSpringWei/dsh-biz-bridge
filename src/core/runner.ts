@@ -53,7 +53,6 @@ export interface SessionEventLike {
 export interface ActivityController {
   begin(sessionId: string): void
   end(sessionId: string): void
-  touch(sessionId: string): void
 }
 
 /** run 配置与事件回调。 */
@@ -157,8 +156,10 @@ class ActiveRun {
         const text = textOfMessage(payload.message)
         if (text !== '') {
           this.config.onAssistantMessage?.(payload.turn ?? 0, text, this.usage)
-          // 兜底：若模型未产生 text-delta（纯推理模型），在此推送最终文本
+          // 兜底：若模型未产生 text-delta（纯推理模型或 DSH 版本差异），
+          // 在此推送最终文本并收集到 result 中。
           if (!this.hasTextDelta) {
+            this.collected += text
             this.config.onTextDelta?.(text)
           }
         }
@@ -273,7 +274,6 @@ export class RunHub {
     } finally {
       if (this.active.get(sessionId) === run) this.active.delete(sessionId)
       this.activity.end(sessionId)
-      this.activity.touch(sessionId)
     }
   }
 
@@ -282,7 +282,6 @@ export class RunHub {
     const run = this.active.get(sessionId)
     if (run === undefined) return
     run.handleEvent(event)
-    this.activity.touch(sessionId)
   }
 
   /** 路由 agent/inbox/claimed（把消息 id 关联到 turn）。 */

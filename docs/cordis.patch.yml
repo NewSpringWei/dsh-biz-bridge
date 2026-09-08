@@ -68,7 +68,5 @@
       callbackTimeout: 30
       maxRetry: 3
       retryInterval: 30
-    agent:
-      idleTimeout: 10
     logging:
       path: E:/dsh-biz-bridge/runtime/logs  # 运行日志目录，按天轮转

@@ -228,6 +228,7 @@ export class CallbackScheduler {
   /** 组装 §6.4.3 回调体。 */
   private buildCallbackPayload(row: TaskRow): Record<string, unknown> {
     const usage = this.lastCompletedUsage(row.id)
+    const result = this.runtime.db.getTaskResult(row.id)
     return {
       task_id: row.id,
       biz_id: row.biz_id,
@@ -235,7 +236,7 @@ export class CallbackScheduler {
       session_id: externalSessionId(row.session_id),
       type: 'callback',
       status: 'completed',
-      result: row.result,
+      result,
       error_message: null,
       created_at: row.created_at,
       completed_at: row.completed_at,

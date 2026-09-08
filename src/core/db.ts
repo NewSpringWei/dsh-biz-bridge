@@ -117,6 +117,11 @@ export class BridgeDb {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
+      CREATE TABLE IF NOT EXISTS task_results (
+        task_id    TEXT PRIMARY KEY REFERENCES tasks(id),
+        result     TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `)
   }
 
@@ -231,22 +236,27 @@ export class BridgeDb {
     ).run(to, now, taskId, from).changes
   }
 
-  /** 设置任务完成：completed + result + 可选的 completed_at；回调任务同时武装送达状态机。 */
+  /** 设置任务完成：completed + result 写入 task_results + 可选的 completed_at；回调任务同时武装送达状态机。 */
   completeTask(
     taskId: string,
     input: { result: string; usage?: Record<string, unknown> | null; isCallback: boolean; now: string },
   ): void {
     const sql = input.isCallback
-      ? `UPDATE tasks SET status='completed', result=?, completed_at=?, updated_at=?,
+      ? `UPDATE tasks SET status='completed', completed_at=?, updated_at=?,
            callback_status='pending', next_callback_at=? WHERE id=? AND status='processing'`
-      : `UPDATE tasks SET status='completed', result=?, completed_at=?, updated_at=?
+      : `UPDATE tasks SET status='completed', completed_at=?, updated_at=?
          WHERE id=? AND status='processing'`
     this.conn.prepare(sql).run(
-      input.result,
       input.now,
       input.now,
       ...(input.isCallback ? [input.now, taskId] as const : [taskId] as const),
     )
+    // result 大文本写入独立表，避免主表膨胀影响热路径查询
+    if (input.result !== '') {
+      this.conn.prepare(
+        'INSERT OR REPLACE INTO task_results (task_id, result, created_at) VALUES (?, ?, ?)',
+      ).run(taskId, input.result, input.now)
+    }
   }
 
   /** 设置任务失败（执行性错误，§9）。 */
@@ -389,6 +399,12 @@ export class BridgeDb {
     return this.mapTask(this.conn.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined)
   }
 
+  /** 读任务结果（从 task_results 表，大文本不随主查询加载）。 */
+  getTaskResult(taskId: string): string | null {
+    const row = this.conn.prepare('SELECT result FROM task_results WHERE task_id = ?').get(taskId) as { result?: string } | undefined
+    return row?.result ?? null
+  }
+
   /** 按幂等键读任务。 */
   getTaskByBizKey(clientId: string, bizId: string, replaySeq: number): TaskRow | undefined {
     return this.mapTask(this.conn.prepare(
@@ -485,6 +501,31 @@ export class BridgeDb {
       "SELECT * FROM tasks WHERE status = 'processing' ORDER BY created_at ASC, id ASC",
     ).all() as Array<Record<string, unknown>>
     return rows.map(row => this.mapTask(row) as TaskRow)
+  }
+
+  /** 清理超过 retentionDays 天的终态任务及其日志和结果（默认 90 天）。返回清理的任务数。 */
+  cleanupExpired(retentionDays = 90): number {
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    // 1. 删除过期 task_logs（先删子表，避免外键约束问题）
+    const expiredTaskIds = this.conn.prepare(
+      `SELECT id FROM tasks WHERE created_at < ? AND status IN ('completed','failed','callback_failed','cancelled')`,
+    ).all(cutoff) as Array<{ id: string }>
+    if (expiredTaskIds.length === 0) return 0
+    const ids = expiredTaskIds.map(r => r.id)
+    const marks = ids.map(() => '?').join(',')
+    this.conn.prepare(`DELETE FROM task_logs WHERE task_id IN (${marks})`).run(...ids)
+    this.conn.prepare(`DELETE FROM task_results WHERE task_id IN (${marks})`).run(...ids)
+    // 2. 删除过期 tasks
+    this.conn.prepare(
+      `DELETE FROM tasks WHERE created_at < ? AND status IN ('completed','failed','callback_failed','cancelled')`,
+    ).run(cutoff)
+    // 3. 回收空间（温和模式，不阻塞写入）
+    try {
+      this.conn.exec('PRAGMA incremental_vacuum')
+    } catch {
+      // incremental_vacuum 需要先设置 auto_vacuum=INCREMENTAL，失败时忽略
+    }
+    return expiredTaskIds.length
   }
 
   /** 统计（§6.5.7）。scope 非 admin 时限定 clientId。 */

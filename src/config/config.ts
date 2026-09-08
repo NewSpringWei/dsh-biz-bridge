@@ -34,9 +34,6 @@ export interface ResolvedConfig {
     maxRetry: number
     retryInterval: number
   }
-  agent: {
-    idleTimeout: number
-  }
   http: {
     /** SSE keepalive 注释行间隔（秒），设计 §6.4.1 默认 15。 */
     sseKeepalive: number
@@ -58,7 +55,6 @@ export const DEFAULTS = {
     maxRetry: 3,
     retryInterval: 30,
   },
-  agent: { idleTimeout: 10 },
   http: { sseKeepalive: 15 },
   logging: { path: './logs' },
 } as const
@@ -137,11 +133,6 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     }
   }
 
-  const agent = { idleTimeout: input.agent?.idleTimeout ?? DEFAULTS.agent.idleTimeout }
-  if (!Number.isSafeInteger(agent.idleTimeout) || agent.idleTimeout < 0) {
-    throw new Error('dsh-biz-bridge: config agent.idleTimeout must be a non-negative safe integer (minutes)')
-  }
-
   const http = { sseKeepalive: input.http?.sseKeepalive ?? DEFAULTS.http.sseKeepalive }
   if (!Number.isSafeInteger(http.sseKeepalive) || http.sseKeepalive < 1) {
     throw new Error('dsh-biz-bridge: config http.sseKeepalive must be a positive safe integer')
@@ -152,5 +143,5 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     throw new Error('dsh-biz-bridge: config logging.path must be a non-empty string')
   }
 
-  return { database, auth: { timestampWindow, nonceCacheSize, clients }, scheduler, agent, http, logging }
+  return { database, auth: { timestampWindow, nonceCacheSize, clients }, scheduler, http, logging }
 }

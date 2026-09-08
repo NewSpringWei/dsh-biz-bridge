@@ -11,6 +11,9 @@
  *   POST …/api/v1/tasks/{id}/replay 重播
  *   POST …/api/v1/tasks/{id}/priority 优先级
  *   POST …/api/v1/stats             统计
+ *   POST …/api/v1/sessions/{id}/messages  会话消息查询
+ *   POST …/api/v1/callback-test/receive   回调测试接收（免签名）
+ *   POST …/api/v1/callback-test/{id}      回调测试状态查询
  *   GET  …/static/*                第一方参考/调试页面（index/admin/client/utils，免签名）
  *
  * 除静态页外均需签名头（§6.2）。路由 handler 拥有完整响应生命周期（§6.1）。
@@ -22,7 +25,7 @@ import { ForbiddenError, NotFoundError } from '../shared/errors.ts'
 import { internalSessionId } from '../shared/session-id.ts'
 import { parseJsonBody, readBody, sendError, writeJson } from './http-util.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, replayOp, statsOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, replayOp, statsOp, sessionMessagesOp,
 } from '../core/ops.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import { validateSubmitInput } from '../core/submission.ts'
@@ -114,6 +117,13 @@ export function createBridgeHandler(runtime: BridgeRuntime) {
     try {
       // 第一方参考/调试页面（GET/HEAD，免签名）
       if (serveStatic(runtime, req, res, pathname)) return
+      // 回调测试接收端点（免签名：scheduler 服务端 POST，不携带签名头）
+      if (pathname === '/bizbridge/api/v1/callback-test/receive' && req.method === 'POST') {
+        const rawBody = await readBody(req)
+        const body = parseJsonBody(rawBody)
+        handleCallbackTestReceive(body, res)
+        return
+      }
       // 其余全部 POST + 签名
       if (req.method !== 'POST') {
         runtime.fileLogger.warn('http', `method not allowed: ${req.method}`, { pathname })
@@ -163,6 +173,24 @@ async function dispatch(
   if (pathname === '/bizbridge/api/v1/models') {
     fileLogger.info('models', `query by ${caller.clientId}`)
     writeJson(res, 200, await modelsOp(runtime))
+    return
+  }
+  // /bizbridge/api/v1/sessions/<id>/messages
+  const sessionMatch = /^\/bizbridge\/api\/v1\/sessions\/([A-Za-z0-9:._-]{1,128})\/messages$/.exec(pathname)
+  if (sessionMatch !== null) {
+    const sessionId = sessionMatch[1] ?? ''
+    fileLogger.info('session-messages', `query by ${caller.clientId}`, { sessionId })
+    if (runtime.sessionQuery === undefined) {
+      writeJson(res, 501, { error: { code: 'NOT_IMPLEMENTED', message: 'sessionQuery service is not available', details: {} } })
+      return
+    }
+    writeJson(res, 200, await sessionMessagesOp(runtime.sessionQuery, sessionId, caller, body))
+    return
+  }
+  // 回调测试：状态查询（需签名，admin scope）
+  const cbTestMatch = /^\/bizbridge\/api\/v1\/callback-test\/([A-Za-z0-9_-]{1,128})$/.exec(pathname)
+  if (cbTestMatch !== null) {
+    handleCallbackTestStatus(cbTestMatch[1] ?? '', res)
     return
   }
   // /bizbridge/api/v1/tasks/<id>[/logs|cancel|replay|priority]
@@ -265,7 +293,7 @@ function enqueueCallback(
   res: ServerResponse,
 ): void {
   const input = validateSubmitInput(caller, 'callback', body)
-  const sid = internalSessionId(input.clientId, input.sessionId)
+  const sid = internalSessionId(input.clientId, input.sessionId, 'cb')
   const now = nowIso()
   const taskId = randomUUID()
   runtime.db.createTask({
@@ -289,4 +317,49 @@ function enqueueCallback(
     message: '任务已入队，等待处理',
     ext: {},
   })
+}
+
+// ─── 回调测试接收器（内存存储，仅用于调试页面端到端测试） ───
+
+interface CallbackTestEntry {
+  task_id: string
+  biz_id: string
+  status: string
+  result: unknown
+  received_at: string
+  raw_body: unknown
+}
+
+const callbackTestStore = new Map<string, CallbackTestEntry>()
+const CALLBACK_TEST_TTL_MS = 30 * 60 * 1000 // 30 分钟自动清理
+
+/** 回调测试接收端点：scheduler POST 到此，存储到内存。 */
+function handleCallbackTestReceive(body: unknown, res: ServerResponse): void {
+  const entry = body as Record<string, unknown>
+  const taskId = typeof entry.task_id === 'string' ? entry.task_id : 'unknown'
+  const now = new Date().toISOString()
+  callbackTestStore.set(taskId, {
+    task_id: taskId,
+    biz_id: typeof entry.biz_id === 'string' ? entry.biz_id : '',
+    status: typeof entry.status === 'string' ? entry.status : 'unknown',
+    result: entry.result ?? null,
+    received_at: now,
+    raw_body: body,
+  })
+  // 清理过期条目
+  const cutoff = Date.now() - CALLBACK_TEST_TTL_MS
+  for (const [id, e] of callbackTestStore) {
+    if (new Date(e.received_at).getTime() < cutoff) callbackTestStore.delete(id)
+  }
+  writeJson(res, 200, { ok: true, task_id: taskId, received_at: now })
+}
+
+/** 回调测试状态查询：前端轮询此端点等待回调到达。 */
+function handleCallbackTestStatus(taskId: string, res: ServerResponse): void {
+  const entry = callbackTestStore.get(taskId)
+  if (entry === undefined) {
+    writeJson(res, 200, { task_id: taskId, received: false })
+    return
+  }
+  writeJson(res, 200, { task_id: taskId, received: true, ...entry })
 }

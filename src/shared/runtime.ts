@@ -42,6 +42,18 @@ export interface LlmLike {
   }>
 }
 
+/** 会话查询最小面（真实实现 ctx.sessionQuery）。 */
+export interface SessionQueryLike {
+  readSession(sessionId: string): Promise<{
+    session: { id: string; createdAt: number; cwd?: string }
+    events: Array<{
+      type: string
+      data?: unknown
+      seq?: number
+    }>
+  }>
+}
+
 /**
  * 静态资源名 → 内容（/bizbridge/static/<name>，内容类型由扩展名判定）。
  * 见 http/admin-page.ts 的资源清单。
@@ -60,6 +72,7 @@ export interface BridgeRuntime {
   nonceSeen: NonceSeen
   logger: LoggerLike
   llm: LlmLike
+  sessionQuery: SessionQueryLike | undefined
   fileLogger: FileLogger
   /** 第一方参考/调试页面静态资源（index/admin/client/utils + common.js + style.css）。 */
   staticFiles: StaticFiles

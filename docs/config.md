@@ -40,15 +40,27 @@ dsh --profile bizbridge
 | `host` | 监听地址；`127.0.0.1` 仅本机（推荐），`0.0.0.0` 局域网/外部访问 |
 | `port` | 监听端口（默认示例 `42731`，按需修改） |
 
+### runtime（磁盘根 · 唯一路径配置）
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| `path` | `"./runtime"` | 单一磁盘根；相对路径按 DSH 进程 cwd 解析；**建议用绝对路径**。其下固定派生：`data/`（SQLite）、`logs/`（运行日志）、`workspace/<clientId>/`（各业务 client 的会话工作目录） |
+
+> 目录结构（激活/首次创建会话时自动 mkdir，无需预建）：
+> ```text
+> <runtime>/
+> ├─ data/dsh-biz-bridge.db      # SQLite（WAL/-shm 同目录）
+> ├─ logs/                        # 按天轮转 dsh_biz_bridge_{yyyymmdd}.log
+> └─ workspace/<clientId>/        # 该 client 全部 agent 会话的 cwd（业务隔离 + DSH workspace-write 范围）
+> ```
+> 本次破坏性改版（草创期清理，无历史包袱）：旧 `database.path` 与 `logging.path` 键已移除。
+
 ### database
 
 | 键 | 缺省 | 说明 |
 |----|------|------|
-| `path` | `"./data/dsh_biz_bridge.db"` | SQLite 文件；相对路径按进程 cwd 解析；`:memory:` 仅测试 |
 | `journalMode` | `"WAL"` | SQLite journal 模式 |
 | `busyTimeout` | `5000` | busy 超时（毫秒） |
-
-> 建议用**绝对路径**（相对路径会落在进程 cwd 下，重启/换目录易乱）。插件会自动创建父目录。
 
 ### auth
 
@@ -91,15 +103,13 @@ scope 权限说明：
 |----|------|------|
 | `sseKeepalive` | `15` | 流式响应 keepalive 注释行间隔（秒） |
 
-### logging
-
-| 键 | 缺省 | 说明 |
-|----|------|------|
-| `path` | `"./logs"` | 运行日志目录；建议用绝对路径；每天生成 `dsh_biz_bridge_{yyyymmdd}.log` |
+### logging（运行日志，目录不再配置）
 
 > 运行日志记录插件的 HTTP 请求、任务生命周期（创建/完成/失败/取消）、调度器事件等，
 > 用于排查定位问题。与 `task_logs` 表分离——task_logs 是业务级任务日志，运行日志是
-> 插件级运维日志。日志中涉及任务操作时会携带 `task_id`，方便交叉定位。
+> 插件级运维日志。日志中涉及任务操作时会携带 `task_id`，方便交叉定位。目录固定为
+> `<runtime>/logs/`（由 runtime.path 派生，按天生成 `dsh_biz_bridge_{yyyymmdd}.log`），
+> 不再单独配置路径。
 
 ---
 

@@ -29,6 +29,19 @@ interface DeliverResult {
   detail?: string
 }
 
+/** 解析 tasks.usage JSON 列；NULL / 非法 JSON 按 null（损坏不阻断回调送达）。 */
+function parseStoredUsage(raw: string | null): Record<string, unknown> | null {
+  if (raw === null) return null
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
 /** 回调调度器：pump() 由外部定时器调用。 */
 export class CallbackScheduler {
   /** 执行中的回调任务 id（并发额度计数，§7.1 maxConcurrency）。 */
@@ -227,7 +240,6 @@ export class CallbackScheduler {
 
   /** 组装 §6.4.3 回调体。 */
   private buildCallbackPayload(row: TaskRow): Record<string, unknown> {
-    const usage = this.lastCompletedUsage(row.id)
     const result = this.runtime.db.getTaskResult(row.id)
     return {
       task_id: row.id,
@@ -240,19 +252,7 @@ export class CallbackScheduler {
       error_message: null,
       created_at: row.created_at,
       completed_at: row.completed_at,
-      usage,
-    }
-  }
-
-  /** 从最后一次 completed 日志元数据取 usage（completeTask 未持久化 usage 列）。 */
-  private lastCompletedUsage(taskId: string): Record<string, unknown> | null {
-    const log = this.runtime.db.lastLogOfStage(taskId, 'completed')
-    if (log === null || log.metadata === null) return null
-    try {
-      const meta = JSON.parse(log.metadata) as { usage?: Record<string, unknown> | null }
-      return meta.usage ?? null
-    } catch {
-      return null
+      usage: parseStoredUsage(row.usage),
     }
   }
 

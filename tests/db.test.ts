@@ -119,12 +119,15 @@ test('delivery state machine (callback_status two-axis, §7.4)', () => {
   const db = openDb()
   const row = insertCallback(db, { id: 'd1' })
   assert.equal(db.claimSpecific(row.id, nowIso()), true)
-  // 模拟执行完成 → completed + 送达轴武装 pending
+  // 模拟执行完成 → completed + 送达轴武装 pending；usage 落 tasks.usage（JSON 串）
   db.completeTask(row.id, { result: '结果', usage: { total_tokens: 9 }, isCallback: true, now: nowIso() })
   let fresh = db.getTask(row.id)
   assert.equal(fresh?.status, 'completed')
   assert.equal(fresh?.callback_status, 'pending')
   assert.ok(fresh?.next_callback_at)
+  const storedUsage = fresh?.usage
+  assert.ok(storedUsage)
+  assert.deepEqual(JSON.parse(storedUsage), { total_tokens: 9 })
 
   // 成功 → succeeded（终态）
   const okStatus = db.recordCallbackResult(row.id, { ok: true, retryCount: 0, maxRetry: 3, retryIntervalSeconds: 30, now: nowIso() })
@@ -136,6 +139,8 @@ test('delivery state machine (callback_status two-axis, §7.4)', () => {
   const row2 = insertCallback(db, { id: 'd2', bizId: 'retry-me' })
   assert.equal(db.claimSpecific(row2.id, nowIso()), true)
   db.completeTask(row2.id, { result: 'r', isCallback: true, now: nowIso() })
+  // 未提供 usage → tasks.usage 保持 NULL
+  assert.equal(db.getTask(row2.id)?.usage, null)
   for (let attempt = 1; attempt <= 3; attempt++) {
     const next = db.recordCallbackResult(row2.id, { ok: false, retryCount: attempt, maxRetry: 3, retryIntervalSeconds: 30, now: nowIso() })
     assert.equal(next, 'retrying')

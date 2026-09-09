@@ -74,31 +74,36 @@ export class BridgeDb {
     closer.close()
   }
 
-  /** 幂等建表 + 索引（§4.2/§4.3）。 */
+  /**
+   * 幂等建表 + 索引（§4.2/§4.3）。表与列的 `--` 中文注释即结构文档，改动列时同步维护。
+   */
   private migrate(): void {
     this.conn.exec(`
+      -- tasks：任务信息表，兼作消息队列（§4.2.1）。
+      -- 两轴分离：status = 执行状态轴；callback_status = 回调送达状态轴（仅 callback 类型，§7.4）。
+      -- 结果全文独立存 task_results（§4.2.3），本表仅保留 usage 等轻量摘要列，避免大文本膨胀热路径查询行。
       CREATE TABLE IF NOT EXISTS tasks (
-        id               TEXT PRIMARY KEY,
-        client_id        TEXT NOT NULL,
-        biz_id           TEXT NOT NULL,
-        replay_seq       INTEGER NOT NULL DEFAULT 0,
-        session_id       TEXT NOT NULL,
-        prompt           TEXT NOT NULL DEFAULT '',
-        type             TEXT NOT NULL CHECK (type IN ('stream','callback')),
-        status           TEXT NOT NULL CHECK (status IN ('queued','received','processing','completed','failed','callback_failed','cancelled')),
-        params           TEXT,
-        callback_url     TEXT,
-        result           TEXT,
-        error_message    TEXT,
-        retry_count      INTEGER NOT NULL DEFAULT 0,
-        callback_status  TEXT CHECK (callback_status IN ('pending','retrying','succeeded','exhausted')),
-        next_callback_at TEXT,
-        priority         INTEGER NOT NULL DEFAULT 0,
-        scheduled_at     TEXT,
-        locked_at        TEXT,
-        created_at       TEXT NOT NULL,
-        updated_at       TEXT NOT NULL,
-        completed_at     TEXT
+        id               TEXT PRIMARY KEY,          -- 任务唯一 ID（UUID）
+        client_id        TEXT NOT NULL,             -- 客户端标识（签名认证主体，§6.2.4）
+        biz_id           TEXT NOT NULL,             -- 业务请求幂等键（与 client_id、replay_seq 组合唯一，§6.3.1）
+        replay_seq       INTEGER NOT NULL DEFAULT 0,-- 重播序号（原始任务为 0，每次重播 +1）
+        session_id       TEXT NOT NULL,             -- DSH agent 会话 ID（内部为 clientId:type:sessionId 三段式）
+        prompt           TEXT NOT NULL DEFAULT '',  -- 请求内容（用户提交的 prompt 原文）
+        type             TEXT NOT NULL CHECK (type IN ('stream','callback')),   -- 任务类型：stream=流式响应 / callback=回调响应
+        status           TEXT NOT NULL CHECK (status IN ('queued','received','processing','completed','failed','callback_failed','cancelled')), -- 执行状态轴（§7.4）
+        params           TEXT,                      -- 附加参数 JSON（agent 覆盖项、tools 等，§6.4）
+        callback_url     TEXT,                      -- 回调地址（仅 callback 类型）
+        usage            TEXT,                      -- token 用量 JSON（最后一次 assistant/message 的 usage，完成时写入，监测用）
+        error_message    TEXT,                      -- 错误信息（failed / cancelled 时写入）
+        retry_count      INTEGER NOT NULL DEFAULT 0,-- 回调送达重试次数（§7.4）
+        callback_status  TEXT CHECK (callback_status IN ('pending','retrying','succeeded','exhausted')), -- 回调送达状态轴（仅 callback 类型，§7.4）
+        next_callback_at TEXT,                      -- 下次回调尝试时间（ISO-8601 UTC）
+        priority         INTEGER NOT NULL DEFAULT 0,-- 队列优先级（数字越小越优先；仅 callback 入队时有效）
+        scheduled_at     TEXT,                      -- 计划消费时间（仅 callback；默认等于 created_at）
+        locked_at        TEXT,                      -- 调度器乐观锁抢占时间（processing 期间非空，§7.2）
+        created_at       TEXT NOT NULL,             -- 创建时间（ISO-8601 UTC）
+        updated_at       TEXT NOT NULL,             -- 最近更新时间（ISO-8601 UTC）
+        completed_at     TEXT                       -- 完成时间（进入终态时写入，ISO-8601 UTC）
       );
       CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
       CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks(type);
@@ -108,19 +113,21 @@ export class BridgeDb {
       CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(type, status, priority, scheduled_at);
       CREATE INDEX IF NOT EXISTS idx_tasks_callback ON tasks(type, status, callback_status, next_callback_at);
+      -- task_logs：任务流水日志表（§4.2.2）。记录任务从接收到终态的各阶段事件，含分块文本与扩展元数据。
       CREATE TABLE IF NOT EXISTS task_logs (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id    TEXT NOT NULL,
-        stage      TEXT NOT NULL,
-        message    TEXT,
-        metadata   TEXT,
-        created_at TEXT NOT NULL
+        id         INTEGER PRIMARY KEY AUTOINCREMENT, -- 自增主键
+        task_id    TEXT NOT NULL,                   -- 关联任务 ID（tasks.id）
+        stage      TEXT NOT NULL,                   -- 阶段标识：received / processing / chunk / callback / completed / failed / cancelled
+        message    TEXT,                            -- 日志内容
+        metadata   TEXT,                            -- 扩展元数据 JSON（turn、usage、reason、http_status 等）
+        created_at TEXT NOT NULL                    -- 日志时间（ISO-8601 UTC）
       );
       CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
+      -- task_results：任务结果全文表（§4.2.3）。大文本与 tasks 热路径行解耦（1:1），列表/队列查询不加载全文。
       CREATE TABLE IF NOT EXISTS task_results (
-        task_id    TEXT PRIMARY KEY REFERENCES tasks(id),
-        result     TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        task_id    TEXT PRIMARY KEY REFERENCES tasks(id), -- 关联任务 ID（与 tasks 1:1）
+        result     TEXT NOT NULL,                   -- 结果全文（text-delta 按事件序拼接，§5.5）
+        created_at TEXT NOT NULL                    -- 写入时间（ISO-8601 UTC）
       );
     `)
   }
@@ -139,7 +146,7 @@ export class BridgeDb {
       status: String(row.status) as TaskStatus,
       params: row.params === null || row.params === undefined ? null : String(row.params),
       callback_url: row.callback_url === null || row.callback_url === undefined ? null : String(row.callback_url),
-      result: row.result === null || row.result === undefined ? null : String(row.result),
+      usage: row.usage === null || row.usage === undefined ? null : String(row.usage),
       error_message: row.error_message === null || row.error_message === undefined ? null : String(row.error_message),
       retry_count: Number(row.retry_count ?? 0),
       callback_status: row.callback_status === null || row.callback_status === undefined
@@ -236,21 +243,24 @@ export class BridgeDb {
     ).run(to, now, taskId, from).changes
   }
 
-  /** 设置任务完成：completed + result 写入 task_results + 可选的 completed_at；回调任务同时武装送达状态机。 */
+  /** 设置任务完成：completed + usage 写入 tasks + 可选 completed_at；result 全文写 task_results；回调任务同时武装送达状态机。 */
   completeTask(
     taskId: string,
     input: { result: string; usage?: Record<string, unknown> | null; isCallback: boolean; now: string },
   ): void {
+    // usage JSON 落 tasks.usage（token 用量监测，§4.2.1）；无用量时置 NULL。
+    const usageJson = input.usage === null || input.usage === undefined ? null : JSON.stringify(input.usage)
     const sql = input.isCallback
-      ? `UPDATE tasks SET status='completed', completed_at=?, updated_at=?,
+      ? `UPDATE tasks SET status='completed', completed_at=?, updated_at=?, usage=?,
            callback_status='pending', next_callback_at=? WHERE id=? AND status='processing'`
-      : `UPDATE tasks SET status='completed', completed_at=?, updated_at=?
+      : `UPDATE tasks SET status='completed', completed_at=?, updated_at=?, usage=?
          WHERE id=? AND status='processing'`
-    this.conn.prepare(sql).run(
-      input.now,
-      input.now,
-      ...(input.isCallback ? [input.now, taskId] as const : [taskId] as const),
-    )
+    const params: Array<string | null> = [input.now, input.now, usageJson]
+    if (input.isCallback) {
+      this.conn.prepare(sql).run(...params, input.now, taskId)
+    } else {
+      this.conn.prepare(sql).run(...params, taskId)
+    }
     // result 大文本写入独立表，避免主表膨胀影响热路径查询
     if (input.result !== '') {
       this.conn.prepare(
@@ -265,6 +275,20 @@ export class BridgeDb {
       `UPDATE tasks SET status='failed', error_message=?, updated_at=?, completed_at=?
        WHERE id=? AND status IN ('processing','received','queued')`,
     ).run(errorMessage, now, now, taskId)
+  }
+
+  /**
+   * 回调任务"再次触发回调"（§6.5.8）：把已完成执行（completed / callback_failed）的
+   * 回调任务重新武装送达状态机——status 归位 completed、callback_status='pending'、
+   * next_callback_at=now、retry_count 清零，调度器下一轮 pump 即重新 POST。
+   * @returns 影响行数（0 = 类型/状态不符或缺少 callback_url）
+   */
+  armRedelivery(taskId: string, now: string): number {
+    return this.conn.prepare(
+      `UPDATE tasks
+         SET status='completed', callback_status='pending', next_callback_at=?, retry_count=0, updated_at=?
+       WHERE id=? AND type='callback' AND status IN ('completed','callback_failed') AND callback_url IS NOT NULL`,
+    ).run(now, now, taskId).changes
   }
 
   /** 优先级调整（§6.5.6，仅 queued）；返回影响行数（0 = 状态已变）。 */
@@ -410,6 +434,14 @@ export class BridgeDb {
     return this.mapTask(this.conn.prepare(
       'SELECT * FROM tasks WHERE client_id = ? AND biz_id = ? AND replay_seq = ?',
     ).get(clientId, bizId, replaySeq) as Record<string, unknown> | undefined)
+  }
+
+  /** 某 (client_id, biz_id) 下当前最大 replay_seq（无记录为 0）。重播取此 + 1，避免撞唯一键。 */
+  maxReplaySeq(clientId: string, bizId: string): number {
+    const row = this.conn.prepare(
+      'SELECT COALESCE(MAX(replay_seq), 0) AS m FROM tasks WHERE client_id = ? AND biz_id = ?',
+    ).get(clientId, bizId) as { m: number } | undefined
+    return Number(row?.m ?? 0)
   }
 
   /** 任务分页查询（§6.5.1）。 */

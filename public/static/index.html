@@ -22,9 +22,9 @@
     <p>这是 <b>dsh-biz-bridge</b> 插件的对接参考，同时可作为开发/联调工具。
     按使用对象分为三个页面，覆盖插件的两类接口与一组免鉴权小工具：</p>
     <ul class="tight">
-      <li><b>管理运维</b>：以管理级 client 调用管理接口（统计 / 任务 / 取消 / 重播 / 优先级）。</li>
-      <li><b>接入测试</b>：以业务级 client 调用通信接口（stream / callback）与业务级自有任务接口。</li>
-      <li><b>工具</b>：浏览器本地生成 RSA 密钥对等免鉴权小工具。</li>
+      <li><b>管理运维</b>：以管理级 client 调用管理接口（统计 / 任务列表 / 详情日志 / 取消 / 重播 / 再次回调 / 优先级）。</li>
+      <li><b>接入测试</b>：以业务级 client 调用通信接口（stream / callback）与业务级自有任务接口（查询 / 取消 / 重播 / 再次回调）。</li>
+      <li><b>工具</b>：浏览器本地生成 RSA 密钥对、API 接口说明等免鉴权参考。</li>
     </ul>
   </section>
 
@@ -32,17 +32,17 @@
     <a class="tool-card" href="admin.html">
       <span class="badge signed">需验签 · 管理级</span>
       <h3>管理运维</h3>
-      <p>运行统计、任务列表/详情/日志、取消、重播、优先级调整。</p>
+      <p>运行统计、任务列表/详情/日志、取消、重播、再次回调、优先级调整。</p>
     </a>
     <a class="tool-card" href="client.html">
       <span class="badge signed">需验签 · 业务级</span>
       <h3>接入测试</h3>
-      <p>流式（SSE）与回调提交、幂等 409 演示、业务级自有任务查看与操作。</p>
+      <p>流式（SSE）与回调提交、业务级自有任务查看 / 取消 / 重播 / 再次回调。</p>
     </a>
     <a class="tool-card" href="utils.html">
       <span class="badge free">免验签</span>
       <h3>工具</h3>
-      <p>RSA-2048 密钥对生成（公钥注册进插件配置 auth.clients）+ 预留小工具位。</p>
+      <p>RSA-2048 密钥对生成（公钥注册进插件配置 auth.clients）+ HTTP API 说明。</p>
     </a>
   </div>
 

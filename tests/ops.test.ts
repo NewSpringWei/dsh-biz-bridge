@@ -8,10 +8,10 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { BridgeDb, nowIso } from '../src/core/db.ts'
 import {
-  ForbiddenError, InvalidRequestError, NotFoundError, TaskRunningError,
+  ForbiddenError, InvalidRequestError, NotFoundError,
 } from '../src/shared/errors.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, replayOp, statsOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, statsOp,
 } from '../src/core/ops.ts'
 import { validateSubmitInput } from '../src/core/submission.ts'
 import type { Caller } from '../src/core/auth.ts'
@@ -102,14 +102,19 @@ test('cancel: business cancels own queued; terminal returns 400; cross client 40
   assert.equal(cancelOp(db, foreign, ADMIN).status, 'cancelled')
 })
 
-test('cancel: business cannot cancel processing; admin can with agent cancel flag', () => {
+test('cancel: business can cancel own processing; admin can cancel any client processing', () => {
   const db = openDb()
   const id = makeCallback(db)
   db.claimSpecific(id, nowIso()) // processing
-  assert.throws(() => cancelOp(db, id, BIZ), TaskRunningError)
-  const adminResult = cancelOp(db, id, ADMIN)
-  assert.equal(adminResult.needAgentCancel, true)
+  const bizResult = cancelOp(db, id, BIZ)
+  assert.equal(bizResult.needAgentCancel, true) // 业务级取消处理中任务同样中止 live agent
   assert.equal(db.getTask(id)?.status, 'cancelled')
+  // 管理级可跨 client 取消处理中任务
+  const otherId = makeCallback(db, { clientId: OTHER.clientId })
+  db.claimSpecific(otherId, nowIso())
+  const adminResult = cancelOp(db, otherId, ADMIN)
+  assert.equal(adminResult.needAgentCancel, true)
+  assert.equal(db.getTask(otherId)?.status, 'cancelled')
 })
 
 test('cancel: not found', () => {
@@ -119,7 +124,7 @@ test('cancel: not found', () => {
 
 // ---------- 重播（§6.5.5） ----------
 
-test('replay: only callback, only non-pending, ownership', () => {
+test('replay: only finished callback tasks (not queued/stream/cancelled), ownership', () => {
   const db = openDb()
   // queued 不允许重播
   const queuedId = makeCallback(db, { bizId: 'QUEUED-1' })
@@ -128,6 +133,11 @@ test('replay: only callback, only non-pending, ownership', () => {
   const streamId = makeCallback(db, { bizId: 'STREAM-1', type: 'stream' })
   db.markProcessing(streamId, nowIso())
   assert.throws(() => replayOp(db, streamId, ADMIN), InvalidRequestError)
+  // cancelled（未完成处理）不允许重播
+  const cancelledId = makeCallback(db, { bizId: 'CANCEL-1' })
+  db.cancelTask(cancelledId, '测试取消', nowIso())
+  assert.equal(db.getTask(cancelledId)?.status, 'cancelled')
+  assert.throws(() => replayOp(db, cancelledId, ADMIN), InvalidRequestError)
   // 他人任务 → 403
   const otherId = makeCallback(db, { clientId: OTHER.clientId, bizId: 'OTH-1' })
   complete(db, otherId)
@@ -145,6 +155,76 @@ test('replay: only callback, only non-pending, ownership', () => {
   assert.equal(copy?.session_id, 'session-1')
   assert.equal(copy?.prompt, '请总结')
   assert.equal(copy?.callback_url, 'https://example.com/cb')
+  // 详情：全文 result 来自 task_results；usage 来自 tasks 列（未提供时 null）
+  const originDetail = detailOp(db, origin, ADMIN) as { result: string | null; usage: unknown }
+  assert.equal(originDetail.result, '结果内容')
+  assert.equal(originDetail.usage, null)
+})
+
+test('replay numbers by max replay_seq of (client,biz), not the source row', () => {
+  const db = openDb()
+  const origin = makeCallback(db, { bizId: 'REPLAY-MAX' })
+  complete(db, origin) // seq0 → completed
+  const r1 = replayOp(db, origin, BIZ) as { task_id: string; replay_seq: number }
+  assert.equal(r1.replay_seq, 1)
+  // 再重播 seq0 行：应取 max(1)+1 = 2，而不是 0+1（旧行为会撞唯一键）
+  const r2 = replayOp(db, origin, BIZ) as { task_id: string; replay_seq: number }
+  assert.equal(r2.replay_seq, 2)
+  // 重播最早的重播行（seq1 完成后再重播）应续到 3
+  const seqOne = db.getTask(r1.task_id)
+  assert.ok(seqOne)
+  complete(db, seqOne.id)
+  const r3 = replayOp(db, seqOne.id, BIZ) as { task_id: string; replay_seq: number }
+  assert.equal(r3.replay_seq, 3)
+  const all = db.listTasks({ bizId: 'REPLAY-MAX', page: 1, pageSize: 100 })
+  assert.deepEqual(all.tasks.map(t => t.replay_seq).sort((a, b) => a - b), [0, 1, 2, 3])
+})
+
+// ---------- 再次触发回调（§6.5.8 redeliver） ----------
+
+test('redeliver: completed / callback_failed callback tasks re-arm delivery', () => {
+  const db = openDb()
+  // completed + 送达已成功 → 可再次触发回调
+  const doneId = makeCallback(db, { bizId: 'RD-1' })
+  db.claimSpecific(doneId, nowIso())
+  db.completeTask(doneId, { result: 'r1', usage: { total_tokens: 3 }, isCallback: true, now: nowIso() })
+  db.recordCallbackResult(doneId, { ok: true, retryCount: 0, maxRetry: 3, retryIntervalSeconds: 30, now: nowIso() })
+  assert.equal(db.getTask(doneId)?.callback_status, 'succeeded')
+  const okResult = redeliverOp(db, doneId, BIZ) as { callback_status: string }
+  assert.equal(okResult.callback_status, 'pending')
+  assert.equal(db.getTask(doneId)?.status, 'completed')
+  assert.equal(db.getDeliveryCandidate(nowIso())?.id, doneId)
+
+  // callback_failed（送达耗尽）→ 复位为 completed + pending，可被重新投递
+  const failedId = makeCallback(db, { bizId: 'RD-2' })
+  db.claimSpecific(failedId, nowIso())
+  db.completeTask(failedId, { result: 'r2', isCallback: true, now: nowIso() })
+  for (let a = 1; a <= 3; a++) db.recordCallbackResult(failedId, { ok: false, retryCount: a, maxRetry: 3, retryIntervalSeconds: 30, now: nowIso() })
+  db.recordCallbackResult(failedId, { ok: false, retryCount: 4, maxRetry: 3, retryIntervalSeconds: 30, now: nowIso() })
+  assert.equal(db.getTask(failedId)?.status, 'callback_failed')
+  redeliverOp(db, failedId, BIZ)
+  const rearmed = db.getTask(failedId)
+  assert.equal(rearmed?.status, 'completed')
+  assert.equal(rearmed?.callback_status, 'pending')
+  assert.equal(rearmed?.retry_count, 0)
+})
+
+test('redeliver: wrong type / wrong status / cross-client rejected', () => {
+  const db = openDb()
+  // stream 任务不可 redeliver
+  const streamId = makeCallback(db, { bizId: 'RD-S1', type: 'stream' })
+  db.markProcessing(streamId, nowIso())
+  assert.throws(() => redeliverOp(db, streamId, ADMIN), InvalidRequestError)
+  // 未开始（queued）回调不可 redeliver
+  const queuedId = makeCallback(db, { bizId: 'RD-Q1' })
+  assert.throws(() => redeliverOp(db, queuedId, ADMIN), InvalidRequestError)
+  // 越权：他人已完成任务 → 403
+  const otherId = makeCallback(db, { clientId: OTHER.clientId, bizId: 'RD-O1' })
+  db.claimSpecific(otherId, nowIso())
+  db.completeTask(otherId, { result: 'x', isCallback: true, now: nowIso() })
+  assert.throws(() => redeliverOp(db, otherId, BIZ), ForbiddenError)
+  // 本人可
+  assert.equal((redeliverOp(db, otherId, ADMIN) as { callback_status: string }).callback_status, 'pending')
 })
 
 // ---------- 优先级（§6.5.6） ----------

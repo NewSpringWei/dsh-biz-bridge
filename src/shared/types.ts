@@ -40,7 +40,8 @@ export interface TaskRow {
   /** JSON 字符串或 null */
   params: string | null
   callback_url: string | null
-  result: string | null
+  /** JSON 字符串或 null；最后一次 assistant/message 的 token 用量，完成时写入（结果全文在 task_results，不在此列） */
+  usage: string | null
   error_message: string | null
   retry_count: number
   callback_status: CallbackStatus | null

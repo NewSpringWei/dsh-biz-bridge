@@ -55,11 +55,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-c
 textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; width: 100%; resize: vertical; }
 input.fw { width: 100%; }
 button { padding: 6px 12px; border: 1px solid #c9ced4; border-radius: 6px; background: #fff; color: #1f2328; cursor: pointer; font-size: 13px; }
+button:hover { border-color: #0b69c3; color: #0b69c3; }
 button.primary { background: #0b69c3; border-color: #0b69c3; color: #fff; }
-button.primary:hover { filter: brightness(1.1); }
+button.primary:hover { filter: brightness(1.1); border-color: #0b69c3; color: #fff; }
 button.danger { color: #cf222e; border-color: #cf222e; background: #fff; }
+button.danger:hover { background: #cf222e; color: #fff; }
 button.small { padding: 3px 8px; font-size: 12px; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 嵌入 field 标签文字内的行内小按钮（生成 biz_id / 刷新模型 / 填入测试地址 等） */
+label .btn-inline { margin-left: 8px; vertical-align: -2px; }
+/* 表格操作列：按钮组统一间距与换行 */
+td .ops { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { border-bottom: 1px solid #eef0f2; padding: 6px 8px; text-align: left; vertical-align: top; word-break: break-all; }
 th { color: #57606a; font-weight: 600; background: #f6f8fa; }

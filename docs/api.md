@@ -196,6 +196,7 @@
       "session_id": "sess-1",
       "type": "stream",
       "status": "completed",
+      "usage": { "totalTokens": 1024, "promptTokens": 512, "completionTokens": 512 },
       "priority": 0,
       "created_at": "2025-01-01T00:00:00.000Z",
       "updated_at": "2025-01-01T00:00:05.000Z"
@@ -203,6 +204,8 @@
   ]
 }
 ```
+
+> 列表项不含结果全文；如需查看任务产出与 usage 明细，调用任务详情接口。
 
 ---
 
@@ -231,6 +234,7 @@
   "params": { "model": "deepseek-chat" },
   "callback_url": null,
   "result": "agent 完整输出文本",
+  "usage": { "totalTokens": 1024, "promptTokens": 512, "completionTokens": 512 },
   "error_message": null,
   "retry_count": 0,
   "priority": 0,
@@ -242,7 +246,8 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `result` | string \| null | agent 完整输出（仅 completed 有值） |
+| `result` | string \| null | agent 完整输出（仅 completed 有值；全文独立存于 task_results 表，经详情接口组装读取） |
+| `usage` | object \| null | token 用量（completed 有值；结构同 `assistant/message` 事件 usage，取自 tasks.usage 列） |
 | `error_message` | string \| null | 失败原因（仅 failed/callback_failed 有值） |
 | `params` | object \| null | 提交时的 params（解析后的 JSON） |
 | `callback_url` | string \| null | 回调地址（仅 callback 类型） |
@@ -285,7 +290,7 @@
 
 ## 6. POST /api/v1/tasks/{id}/cancel —— 取消任务
 
-**所需 scope**：业务级仅取消自己的 queued/received 任务 / `admin` 可取消任意非终态任务
+**所需 scope**：业务级取消自己的未开始/进行中任务 / `admin` 可取消任意非终态任务
 
 ### 请求体
 
@@ -305,14 +310,13 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `cancelled` | boolean | 是否成功修改状态 |
-| `needAgentCancel` | boolean | 是否需要通知 agent 中止（仅 admin 取消 processing 任务时为 true） |
+| `needAgentCancel` | boolean | 是否需要通知 agent 中止（取消 processing 任务时为 true，业务级/管理级均可） |
 
-### 错误情况
+### 约束与错误情况
 
 | 条件 | 错误码 |
 |------|--------|
-| 任务已处于终态（completed/failed/callback_failed/cancelled） | 400 `INVALID_REQUEST` |
-| 业务级取消 processing 状态的任务 | 409 `TASK_RUNNING` |
+| 仅 **未开始（queued/received）/ 进行中（processing）** 任务可取消 | 已终态返回 400 `INVALID_REQUEST` |
 | 非 admin 且非任务所属 client | 403 `FORBIDDEN` |
 
 ---
@@ -342,12 +346,45 @@
 ### 约束
 
 - 仅 `callback` 类型任务可重播（stream 返回 400）
-- 原任务不可处于 queued/received 状态（返回 400）
-- 新任务 `replay_seq` = 原 + 1
+- 仅**已完成处理**的回调任务可重播：`status = completed / failed / callback_failed`
+  （queued/received/cancelled 返回 400）
+- 新任务 `replay_seq` = 该 (client_id, biz_id) 当前**最大 replay_seq + 1**（重播较旧条目也连续续号，不撞唯一键）
 
 ---
 
-## 8. POST /api/v1/tasks/{id}/priority —— 调整优先级
+## 8. POST /api/v1/tasks/{id}/redeliver —— 再次触发回调
+
+对已完成执行的回调任务重新武装送达状态机，使其立即向 `callback_url` 再次 POST 执行结果
+（业务场景：业务侧丢失/未收到上次回调，或想重发某次执行结果；不影响任务执行记录）。
+
+**所需 scope**：业务级仅操作自己 / `admin` 可操作全部
+
+### 请求体
+
+空对象 `{}`。
+
+### 响应体（200）
+
+```json
+{
+  "task_id": "uuid",
+  "status": "completed",
+  "callback_status": "pending",
+  "message": "回调已重新武装，将在下一轮调度立即投递"
+}
+```
+
+### 约束与错误情况
+
+- 仅 `callback` 类型任务（stream 返回 400）
+- 仅执行已完成的任务：`status = completed`（无论回调此前是否已送达）或
+  `status = callback_failed`（送达重试耗尽；redeliver 会将其复位为 completed 重新投递）
+- 任务缺少 `callback_url` 返回 400
+- 非 admin 且非任务所属 client 返回 403 `FORBIDDEN`
+
+---
+
+## 9. POST /api/v1/tasks/{id}/priority —— 调整优先级
 
 **所需 scope**：业务级仅操作自己 / `admin` 可操作全部
 
@@ -373,7 +410,7 @@
 
 ---
 
-## 9. POST /api/v1/stats —— 运行统计
+## 10. POST /api/v1/stats —— 运行统计
 
 **所需 scope**：业务级查自己 / `admin` 查全部
 
@@ -397,7 +434,7 @@
 
 ---
 
-## 10. POST /api/v1/models —— 可用模型查询
+## 11. POST /api/v1/models —— 可用模型查询
 
 从 DSH 运行时动态读取已注册的 provider 和模型列表，供调用方在提交任务前选择
 `params.provider` / `params.model` / `params.reasoningEffort`。

@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { BridgeDb, assertWireId, normalizeTimeFilter, nowIso, resolvePage } from './db.ts'
 import {
+  DuplicateBizIdError,
   ForbiddenError,
   InvalidRequestError,
   NotFoundError,
@@ -160,9 +161,23 @@ function summarize(task: TaskRow): Record<string, unknown> {
     session_id: externalSessionId(task.session_id),
     type: task.type,
     status: task.status,
+    usage: parseUsage(task.usage),
     priority: task.priority,
     created_at: task.created_at,
     updated_at: task.updated_at,
+  }
+}
+
+/** tasks.usage JSON 列 → 对象；NULL / 非对象 / 非法 JSON 一律按 null（列表与详情共用）。 */
+function parseUsage(raw: string | null): Record<string, unknown> | null {
+  if (raw === null) return null
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
   }
 }
 
@@ -182,6 +197,7 @@ export function detailOp(db: BridgeDb, taskId: string, caller: Caller): Record<s
     params: task.params === null ? null : JSON.parse(task.params),
     callback_url: task.callback_url,
     result,
+    usage: parseUsage(task.usage),
     error_message: task.error_message,
     retry_count: task.retry_count,
     priority: task.priority,
@@ -217,8 +233,9 @@ export function logsOp(
 
 /**
  * 任务取消（§6.5.4）。
- * 规则：终态 → 400；业务级仅可取消自身 queued/received（processing → 409，
- * 越权 → 403）；admin 可取消任意非终态（含 processing）。
+ * 规则：终态 → 400；业务级仅可取消**自有**任务，管理级可跨 client；
+ * 业务级可取消自己 queued/received/processing（含进行中任务，等同管理级语义，
+ * 处理中任务会被中止 live agent）；越权 → 403。
  * @returns { taskId, status, cancelled, needAgentCancel }
  */
 export function cancelOp(
@@ -231,15 +248,11 @@ export function cancelOp(
   if (terminal.includes(task.status)) {
     throw new InvalidRequestError(`task "${taskId}" is terminal (${task.status}), cannot be cancelled`)
   }
-  const admin = isAdmin(caller)
-  if (!admin && task.status === 'processing') {
-    throw new TaskRunningError(`task "${taskId}" is already processing, cannot be cancelled by a business client`)
-  }
   const changed = db.cancelTask(
     taskId,
-    `任务被${admin ? '管理级' : '业务级'}调用方取消`,
+    `任务被${isAdmin(caller) ? '管理级' : '业务级'}调用方取消`,
     nowIso(),
-    admin ? ['queued', 'received', 'processing'] : [task.status],
+    ['queued', 'received', 'processing'],
   )
   if (changed === 0) {
     // 竞态：被调度器抢占或并发取消
@@ -251,43 +264,91 @@ export function cancelOp(
     }
     throw new TaskRunningError(`task "${taskId}" already started (now ${status}); cannot be cancelled`)
   }
-  return { task_id: taskId, status: 'cancelled', needAgentCancel: !admin ? false : task.status === 'processing' }
+  return { task_id: taskId, status: 'cancelled', needAgentCancel: task.status === 'processing' }
 }
 
 /**
- * 任务重播（§6.5.5）：仅回调任务；原任务非 queued/received 状态；新任务
- * replay_seq = 原 + 1，完全继承业务字段。
+ * 任务重播（§6.5.5）：仅回调任务；且原任务**已完成处理**（completed / failed /
+ * callback_failed，无论执行成败）。新任务 replay_seq = 该 (client_id, biz_id) 当前
+ * **最大 replay_seq + 1**（重播较旧条目不会撞唯一键/乱序），完全继承业务字段。
  */
 export function replayOp(db: BridgeDb, taskId: string, caller: Caller): Record<string, unknown> {
   const task = requireTaskOwned(db, taskId, caller)
   if (task.type !== 'callback') {
     throw new InvalidRequestError(`task "${taskId}" is type ${task.type}; only callback tasks support replay`)
   }
-  if (task.status === 'queued' || task.status === 'received') {
-    throw new InvalidRequestError(`task "${taskId}" is ${task.status}; only non-pending tasks can be replayed`)
+  const replayable: readonly TaskStatus[] = ['completed', 'failed', 'callback_failed']
+  if (!replayable.includes(task.status)) {
+    throw new InvalidRequestError(`task "${taskId}" is ${task.status}; replay only applies to finished callback tasks (completed / failed / callback_failed)`)
   }
   const now = nowIso()
-  const newId = randomUUID()
-  db.createTask({
-    id: newId,
-    clientId: task.client_id,
-    bizId: task.biz_id,
-    replaySeq: task.replay_seq + 1,
-    sessionId: task.session_id,
-    prompt: task.prompt,
-    type: 'callback',
-    params: task.params === null ? undefined : JSON.parse(task.params),
-    callbackUrl: task.callback_url ?? undefined,
-    priority: 0,
-    scheduledAt: now,
-    now,
-  })
+  const { client_id: clientId, biz_id: bizId } = task
+  // 并发重播竞争：先算后插非原子，撞唯一键时重算最大 seq 再试（有限次）。
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const nextSeq = db.maxReplaySeq(clientId, bizId) + 1
+    try {
+      const newId = randomUUID()
+      db.createTask({
+        id: newId,
+        clientId,
+        bizId,
+        replaySeq: nextSeq,
+        sessionId: task.session_id,
+        prompt: task.prompt,
+        type: 'callback',
+        params: task.params === null ? undefined : JSON.parse(task.params),
+        callbackUrl: task.callback_url ?? undefined,
+        priority: 0,
+        scheduledAt: now,
+        now,
+      })
+      return {
+        task_id: newId,
+        biz_id: bizId,
+        replay_seq: nextSeq,
+        status: 'queued',
+        message: '任务已重播，新任务已入队',
+      }
+    } catch (error: unknown) {
+      if (error instanceof DuplicateBizIdError) continue
+      throw error
+    }
+  }
+  throw new TaskRunningError(`task "${taskId}" replay collided repeatedly under concurrency; please retry`)
+}
+
+/**
+ * 再次触发回调（§6.5.8）：已完成执行（completed，无论回调是否已送达）或送达
+ * 耗尽（callback_failed）的回调任务，重新武装送达状态机并立即投递。
+ * 仅回调任务；业务级仅可操作自有任务。
+ */
+export function redeliverOp(
+  db: BridgeDb,
+  taskId: string,
+  caller: Caller,
+): { task_id: string; status: 'completed'; callback_status: 'pending'; message: string } {
+  const task = requireTaskOwned(db, taskId, caller)
+  if (task.type !== 'callback') {
+    throw new InvalidRequestError(`task "${taskId}" is type ${task.type}; only callback tasks support redelivery`)
+  }
+  if (task.status !== 'completed' && task.status !== 'callback_failed') {
+    throw new InvalidRequestError(`task "${taskId}" is ${task.status}; redelivery only applies to completed / callback_failed callback tasks`)
+  }
+  if (task.callback_url === null) {
+    throw new InvalidRequestError(`task "${taskId}" has no callback_url; cannot redeliver`)
+  }
+  const changed = db.armRedelivery(taskId, nowIso())
+  if (changed === 0) {
+    // 竞态：并发状态变化
+    const fresh = db.getTask(taskId)
+    const status = fresh?.status ?? 'gone'
+    throw new TaskRunningError(`task "${taskId}" changed state concurrently (now ${status}); cannot redeliver`)
+  }
   return {
-    task_id: newId,
-    biz_id: task.biz_id,
-    replay_seq: task.replay_seq + 1,
-    status: 'queued',
-    message: '任务已重播，新任务已入队',
+    task_id: taskId,
+    status: 'completed',
+    callback_status: 'pending',
+    message: '回调已重新武装，将在下一轮调度立即投递',
   }
 }
 

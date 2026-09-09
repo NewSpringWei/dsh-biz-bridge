@@ -35,13 +35,16 @@
 # 3) 插件配置
 - id: dsh-biz-bridge
   config:
-    database:
-      # SQLite 绝对路径（推荐；插件会自动创建父目录）。
+    runtime:
+      # 单一磁盘根（绝对路径，推荐）。自动派生子目录：
+      #   <runtime>/data/dsh-biz-bridge.db   SQLite
+      #   <runtime>/logs/                    运行日志（按天轮转）
+      #   <runtime>/workspace/<clientId>/    各业务 client 的会话工作目录
       #   Linux（服务器）：
-      #     path: /var/lib/dsh-bizbridge/runtime/data/dsh-biz-bridge.db
+      #     path: /var/lib/dsh-bizbridge/runtime
       #   Windows（本地开发，盘符按需）：
-      #     path: E:/dsh-biz-bridge/runtime/data/dsh-biz-bridge.db
-      path: E:/dsh-biz-bridge/runtime/data/dsh-biz-bridge.db
+      path: E:/dsh-biz-bridge/runtime
+    database:
       journalMode: "WAL"
       busyTimeout: 5000
     auth:
@@ -68,5 +71,3 @@
       callbackTimeout: 30
       maxRetry: 3
       retryInterval: 30
-    logging:
-      path: E:/dsh-biz-bridge/runtime/logs  # 运行日志目录，按天轮转

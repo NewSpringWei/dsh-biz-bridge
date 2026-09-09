@@ -36,6 +36,7 @@
 
     <section class="panel" id="sec-tasks">
       <h2>任务列表（管理级可见全部 client）</h2>
+      <p class="msg" style="margin:2px 0 8px">操作范围：<b>取消</b>＝未开始 / 进行中；<b>重播</b>＝已完成处理（无论成败）的回调任务；<b>再次回调</b>＝已完成执行（含送达耗尽）的回调任务，立即重新 POST；<b>优先级</b>＝仅排队中。</p>
       <div class="row">
         <div class="field"><label>状态</label>
           <select id="fStatus"><option value="">全部</option><option>queued</option><option>received</option><option>processing</option><option>completed</option><option>failed</option><option>callback_failed</option><option>cancelled</option></select></div>
@@ -143,6 +144,27 @@
 
   $('btnList').onclick = async function () { page = 1; await loadList() }
   $('btnNext').onclick = async function () { page++; await loadList() }
+  // 操作按钮按状态/类型显隐（与 API 规则一致；管理级可见全部 client）
+  function canCancel(status) {
+    return status === 'queued' || status === 'received' || status === 'processing'
+  }
+  function taskActions(t) {
+    var h = '<button class="small" data-act="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
+      '<button class="small" data-act="logs" data-id="' + esc(t.task_id) + '">日志</button>'
+    if (canCancel(t.status)) {
+      h += ' <button class="small danger" data-act="cancel" data-id="' + esc(t.task_id) + '">取消</button>'
+    }
+    if (t.type === 'callback' && (t.status === 'completed' || t.status === 'failed' || t.status === 'callback_failed')) {
+      h += ' <button class="small" data-act="replay" data-id="' + esc(t.task_id) + '">重播</button>'
+    }
+    if (t.type === 'callback' && (t.status === 'completed' || t.status === 'callback_failed')) {
+      h += ' <button class="small" data-act="redeliver" data-id="' + esc(t.task_id) + '">再次回调</button>'
+    }
+    if (t.status === 'queued') {
+      h += ' <button class="small" data-act="priority" data-id="' + esc(t.task_id) + '">优先级</button>'
+    }
+    return h ? '<div class="ops">' + h + '</div>' : '<span class="msg">—</span>'
+  }
   async function loadList() {
     B.showMsg($('msgList'), '请求中…', '')
     try {
@@ -155,13 +177,7 @@
           '<td>' + esc(t.client_id) + '</td><td>' + esc(t.biz_id) + '</td><td>' + t.replay_seq + '</td>' +
           '<td>' + esc(t.session_id.slice(0, 14)) + '</td><td>' + esc(t.type) + '</td><td>' + esc(t.status) + '</td>' +
           '<td>' + t.priority + '</td><td>' + esc(t.created_at) + '</td>' +
-          '<td>' +
-            '<button class="small" data-act="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
-            '<button class="small" data-act="logs" data-id="' + esc(t.task_id) + '">日志</button> ' +
-            '<button class="small" data-act="cancel" data-id="' + esc(t.task_id) + '">取消</button> ' +
-            '<button class="small" data-act="replay" data-id="' + esc(t.task_id) + '">重播</button> ' +
-            '<button class="small" data-act="priority" data-id="' + esc(t.task_id) + '">优先级</button>' +
-          '</td></tr>'
+          '<td>' + taskActions(t) + '</td></tr>'
       }).join('')
       $('taskRows').innerHTML = rows || '<tr><td colspan="10" class="msg">无任务</td></tr>'
       B.showMsg($('msgList'), '第 ' + d.page + ' 页 / 共 ' + d.total + ' 条（本页 ' + d.tasks.length + '）', 'ok')
@@ -175,9 +191,11 @@
     var act = button.getAttribute('data-act')
     if (act === 'detail' || act === 'logs') { await viewTask(taskId, act); return }
     if (act === 'cancel') {
-      if (!window.confirm('确定取消任务 ' + taskId + ' ？（处理中任务将被中止）')) return
+      if (!window.confirm('确定取消任务 ' + taskId + ' ？（未开始/进行中的任务会被取消，处理中任务将中止 agent）')) return
     } else if (act === 'replay') {
-      if (!window.confirm('确定重播任务 ' + taskId + ' ？（仅 callback 且非排队状态）')) return
+      if (!window.confirm('确定重播任务 ' + taskId + ' ？（仅已完成处理的回调任务，将生成 replay_seq+1 的新任务）')) return
+    } else if (act === 'redeliver') {
+      if (!window.confirm('确定再次触发任务 ' + taskId + ' 的回调？（将立即向该任务 callback_url 重新 POST 执行结果）')) return
     }
     var body = {}
     if (act === 'priority') {

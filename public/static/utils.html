@@ -23,6 +23,7 @@
     <div class="sidebar-title">工具</div>
     <a href="#sec-keygen" class="active">密钥对生成</a>
     <a href="#sec-time">时间转换</a>
+    <a href="#sec-api">API 说明</a>
     <a href="#sec-placeholder">预留位</a>
   </aside>
 
@@ -63,6 +64,34 @@
           <button id="btnToEpoch" class="small">转换</button>
           <input id="outEpoch" readonly placeholder="结果"></div>
       </div>
+    </section>
+
+    <section class="panel" id="sec-api">
+      <h2>HTTP API 说明</h2>
+      <p class="msg" style="margin:2px 0 8px">统一前缀 <code>/bizbridge</code>；除静态页与回调测试接收端点外，全部为 <b>POST + 验签</b>：
+      请求头携带 <code>X-Client-Id / X-Timestamp / X-Nonce / X-Signature</code>（签名串 = <code>POST + pathname + timestamp + nonce + SHA256(body)</code>，
+      RSA-SHA256 私钥签名）。错误统一返回 <code>{"error":{"code":…,"message":…,"details":…}}</code>；
+      重复 biz_id 提交返回 409 <code>DUPLICATE_BIZ_ID</code>（幂等演示）。</p>
+      <table>
+        <thead><tr><th style="width:64px">路径（前缀 /api/v1）</th><th style="width:120px">所需 scope</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>POST /stream</code></td><td>业务级 stream</td><td>流式响应（SSE）。body：biz_id/session_id/prompt/params；事件帧 <code>start / chunk / reasoning / done(usage) / error</code>；断连即取消。</td></tr>
+          <tr><td><code>POST /callback</code></td><td>业务级 callback</td><td>回调响应入队。body：+ callback_url/priority；返回 task_id（status=queued），完成后插件 POST 到 callback_url。</td></tr>
+          <tr><td><code>POST /models</code></td><td>已注册 client</td><td>读取 DSH 可用 provider → model → reasoningEfforts（前端联调用）。</td></tr>
+          <tr><td><code>POST /tasks/list</code></td><td>业务级 / admin</td><td>任务分页列表（status/type/client_id/biz_id/起止时间筛选）；业务级自动限定自身 client，admin 可跨 client。</td></tr>
+          <tr><td><code>POST /tasks/{id}</code></td><td>业务级(own) / admin</td><td>任务详情：prompt/params/result（全文，来自 task_results）/usage/error_message 等。</td></tr>
+          <tr><td><code>POST /tasks/{id}/logs</code></td><td>业务级(own) / admin</td><td>任务流水日志分页（received/processing/chunk/completed/failed/cancelled）。</td></tr>
+          <tr><td><code>POST /tasks/{id}/cancel</code></td><td>业务级(own) / admin</td><td>取消<b>未开始 / 进行中</b>任务（处理中任务会中止 live agent）；终态返回 400。</td></tr>
+          <tr><td><code>POST /tasks/{id}/replay</code></td><td>业务级(own) / admin</td><td>重播：仅<b>已完成处理（成功/失败均可）的回调任务</b>，生成 replay_seq+1 新任务。</td></tr>
+          <tr><td><code>POST /tasks/{id}/redeliver</code></td><td>业务级(own) / admin</td><td><b>再次触发回调</b>：仅 completed / callback_failed 的回调任务；立即重新武装送达并向 callback_url POST 执行结果。</td></tr>
+          <tr><td><code>POST /tasks/{id}/priority</code></td><td>业务级(own) / admin</td><td>调整优先级（数字越小越优先，仅 queued）。</td></tr>
+          <tr><td><code>POST /stats</code></td><td>业务级 / admin</td><td>运行统计：stream/callback 成功失败、队列、回调送达失败与平均重试；业务级限定自身。</td></tr>
+          <tr><td><code>POST /sessions/{id}/messages</code></td><td>admin</td><td>会话消息查询（读 DSH session 事件流；需注入 sessionQuery 服务，否则 501）。</td></tr>
+          <tr><td><code>POST /callback-test/receive</code></td><td>免签名</td><td>测试接收器（内存 30 分钟 TTL）：回调任务把 callback_url 指向它即可在页面追踪回调到达。</td></tr>
+          <tr><td><code>POST /callback-test/{id}</code></td><td>需签名</td><td>查询回调是否已到达测试接收器。</td></tr>
+        </tbody>
+      </table>
+      <p class="msg" style="margin-top:8px">静态页与更完整的协议细节见 <code>code/docs/api.md</code> 与设计文档 <code>docs/dsh-biz-bridge-design.md</code> §6。</p>
     </section>
 
     <section class="panel" id="sec-placeholder">

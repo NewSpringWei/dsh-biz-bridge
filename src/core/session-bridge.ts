@@ -10,7 +10,7 @@
 
 import { realpath } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { CwdMismatchError, SessionBusyError, isAlreadyExistsError } from '../shared/errors.ts'
+import { CwdMismatchError, isAlreadyExistsError } from '../shared/errors.ts'
 import type { AgentParamOverrides, TextUserMessage } from '../shared/types.ts'
 
 /** gateway 暴露的持久化探测快照（仅消费 header.cwd）。 */
@@ -36,15 +36,21 @@ export interface BridgeAgent {
 
 /** 会话网关（gateway.ts 实现；测试用 fake）。 */
 export interface SessionGateway {
-  /** a. 内存 store 中是否有 live session（ctx.sessions.get）。 */
-  liveSessionExists(sessionId: string): boolean
+  /**
+   * a. live agent 复用：会话已有 live agent 时返回其桥接面（agents.get，不重开
+   *    持久写句柄）；否则返回 undefined，由决策流继续 stat/resume/create。
+   */
+  liveAgent(sessionId: string): BridgeAgent | undefined
   /** b. 持久化 session log 探测（ctx.sessionPersistence.stat）。 */
   persistedStat(sessionId: string): Promise<PersistedSessionProbe | undefined>
-  /** 当前工作目录（create meta 与 cwd 校验用）。 */
-  currentCwd(): string
-  /** c. create 新会话；meta.cwd = currentCwd()。 */
+  /**
+   * 某 session 的期望工作目录（per-client workspace，runtime/workspace/<clientId>）。
+   * create 时作为 meta.cwd；resume 前与持久化 header.cwd 做一致性校验。
+   */
+  workspaceOf(sessionId: string): string
+  /** c. create 新会话；meta.cwd = workspaceOf(sessionId)（实现方负责确保目录存在）。 */
   createAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent>
-  /** b. resume 已持久化会话。 */
+  /** b. resume 已持久化会话（仅无 live agent 时调用）。 */
   resumeAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent>
 }
 
@@ -79,24 +85,22 @@ export class AgentPool {
   /**
    * openAgent 决策流：live → resume → create。
    * 每次都走 gateway，由 DSH 内部决定 agent 复用。
-   * @throws SessionBusyError 活跃会话非本桥接持有
-   * @throws CwdMismatchError 持久化 cwd 与当前工作目录不一致
+   * @throws CwdMismatchError 持久化 cwd 与该 session 的期望工作目录（per-client workspace）不一致
    */
   async openAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent> {
     this.assertOpen()
-    // a. 已有 live session → 复用；活跃但非本桥接持有 → 不接管。
-    if (this.gateway.liveSessionExists(sessionId)) {
-      const agent = await this.gateway.resumeAgent(sessionId, agentOptions)
-      return agent
-    }
-    // b. 有持久化 log → resume；cwd 校验。
+    // a. 已有 live agent → 直接复用（agents.get；绝不 resume——resume 会与 live
+    //    会话持有的持久写句柄冲突：already owned by an active write handle）。
+    const live = this.gateway.liveAgent(sessionId)
+    if (live !== undefined) return live
+    // b. 有持久化 log → resume；cwd 校验（期望 = 该 session 所属 client 的 workspace）。
     const persisted = await this.gateway.persistedStat(sessionId)
     if (persisted !== undefined) {
       const persistedCwd = persisted.header?.cwd
       if (persistedCwd !== undefined && persistedCwd !== '') {
-        const current = this.gateway.currentCwd()
-        if (!await sameDirectory(persistedCwd, current)) {
-          throw new CwdMismatchError(sessionId, persistedCwd, current)
+        const expected = this.gateway.workspaceOf(sessionId)
+        if (!await sameDirectory(persistedCwd, expected)) {
+          throw new CwdMismatchError(sessionId, persistedCwd, expected)
         }
       }
       return await this.gateway.resumeAgent(sessionId, agentOptions)

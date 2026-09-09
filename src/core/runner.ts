@@ -1,14 +1,19 @@
 /**
  * Turn 驱动器与事件归约（§5.5 通用执行内核）——结构化实现，供流式/回调两路
- * executor 复用；对事件流的消费只依赖本文件内定义的窄类型，不 import DSH 包，
- * 因此可用 fake agent 单测。
+ * executor 复用；对齐 DSH 0.1.5（会话日志 v3）流模型。
  *
- * 事件流向：DSH 的 session/event / agent/inbox/claimed / agent/error 是插件级
- * 广播（对齐 ACP 桥接先例），由 index.ts 的全局监听器按 sessionId 路由到本
- * hub；hub 内同一 session 同时至多一个 ActiveRun（§5.8 会话串行化保证）。
+ * 本模块是 **DSH 无关的归约内核**：消费的是归一化 TurnEvent（dsh/decode.ts
+ * 把 DSH 的 session/event 载荷翻译成该协议），不再出现任何 DSH 事件名/载荷
+ * 结构——官方事件模型变更只需改 decode.ts 适配层，本模块与其余业务代码不动。
+ *
+ * 事件流向：DSH 的 session/event 由 index.ts 的全局监听器收到 → decode.ts
+ * 归一化为 TurnEvent 序列 → 按 sessionId 路由到本 hub；hub 内同一 session
+ * 同时至多一个 ActiveRun（§5.8 会话串行化保证）。agent/inbox/claimed 与
+ * agent/error 仍由 index.ts 直接路由（二者载荷在 DSH 0.1.5 未变）。
  *
  * 归约语义（§5.4/§5.5/§9）：
- * - result = 本任务 turn 内全部 assistant/chunk(text-delta) 文本按事件序拼接；
+ * - result = 本任务 turn 内全部 assistant 文本（text-delta 与 assistant-message
+ *   按序去重拼接，reasoning 不入）；
  * - usage = 本 turn 最后一条 assistant/message 的 usage；
  * - 成败以本 turn 的 turn/end reason.kind 判定；agent/error 兜底去重；
  * - bridge 主动 cancel（断连/管理取消）→ cancelled。
@@ -18,12 +23,26 @@ import type { RunOutcome, TextMessageFactory, TextUserMessage } from '../shared/
 
 export type { TextMessageFactory, TextUserMessage }
 
-/** turn/end reason 的 JSON 安全视图。 */
+/** turn/end reason 的 JSON 安全视图（DSH LlmFailure/TurnEndReason 的结构子集）。 */
 export interface TurnEndReasonLike {
   kind: string
   reason?: Record<string, unknown>
   error?: { message?: string; code?: string } | null
 }
+
+/**
+ * 归一化 Turn 事件（decode.ts 从 DSH session/event 翻译而来，本协议自解释、
+ * 与 DSH 版本解耦）：
+ * - 'text-delta' / 'reasoning-delta'：assistant 流式增量（由 v3 内嵌 stream
+ *   记录展开，或旧版逐 chunk 事件直译）；
+ * - 'assistant-message'：一条已提交的 assistant 消息（全文 + usage）；
+ * - 'turn-end'：turn 收尾（成败判定依据）。
+ */
+export type TurnEvent =
+  | { type: 'text-delta'; turn: number; text: string }
+  | { type: 'reasoning-delta'; turn: number; text: string }
+  | { type: 'assistant-message'; turn: number; text: string; usage: Record<string, unknown> | null }
+  | { type: 'turn-end'; turn: number; reason: TurnEndReasonLike }
 
 /** 可驱动 agent 的最小面（真实 Agent 由 gateway 适配）。 */
 export interface DriveableAgent {
@@ -32,21 +51,6 @@ export interface DriveableAgent {
   /** 桥接主动取消（内部包装 cause={kind:'hook',reason}）。 */
   cancel(reason: string): void
   whenIdle(): Promise<void>
-}
-
-/** 事件负载的窄视图。 */
-interface EventPayload {
-  turn?: number
-  step?: number
-  chunk?: { type?: string; text?: string }
-  message?: unknown
-  usage?: Record<string, unknown> | null
-  reason?: TurnEndReasonLike
-}
-
-export interface SessionEventLike {
-  type: string
-  data?: unknown
 }
 
 /** activity 控制器（真实实现为 AgentPool；测试可注入 fake）。 */
@@ -68,24 +72,6 @@ export interface RunConfig {
 }
 
 const TERMINAL_END_KINDS = new Set(['completed', 'aborted', 'blocked', 'error', 'max-tokens', 'interrupted'])
-
-function payloadOf(event: SessionEventLike): EventPayload {
-  return (event.data ?? {}) as EventPayload
-}
-
-function textOfMessage(message: unknown): string {
-  if (typeof message !== 'object' || message === null) return ''
-  const content = (message as { content?: unknown }).content
-  if (!Array.isArray(content)) return ''
-  let text = ''
-  for (const block of content) {
-    if (typeof block === 'object' && block !== null && (block as { type?: string }).type === 'text') {
-      const value = (block as { text?: unknown }).text
-      if (typeof value === 'string') text += value
-    }
-  }
-  return text
-}
 
 /** 单个活动任务的状态收集器。 */
 class ActiveRun {
@@ -133,41 +119,39 @@ class ActiveRun {
     }
   }
 
-  handleEvent(event: SessionEventLike): void {
-    const payload = payloadOf(event)
-    const inOurTurn = this.turn === undefined || payload.turn === this.turn
+  handleEvent(event: TurnEvent): void {
+    const inOurTurn = this.turn === undefined || event.turn === this.turn
     switch (event.type) {
-      case 'assistant/chunk': {
+      case 'text-delta': {
         if (!inOurTurn) return
-        const chunk = payload.chunk
-        if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
-          this.collected += chunk.text
-          this.hasTextDelta = true
-          this.config.onTextDelta?.(chunk.text)
-        } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
-          // 思考型模型的推理过程，作为 reasoning 事件转发
-          this.config.onReasoningDelta?.(chunk.text)
-        }
+        this.collected += event.text
+        this.hasTextDelta = true
+        this.config.onTextDelta?.(event.text)
         return
       }
-      case 'assistant/message': {
+      case 'reasoning-delta': {
         if (!inOurTurn) return
-        if (payload.usage !== undefined && payload.usage !== null) this.usage = payload.usage
-        const text = textOfMessage(payload.message)
-        if (text !== '') {
-          this.config.onAssistantMessage?.(payload.turn ?? 0, text, this.usage)
-          // 兜底：若模型未产生 text-delta（纯推理模型或 DSH 版本差异），
-          // 在此推送最终文本并收集到 result 中。
+        // 思考型模型的推理过程，作为 reasoning 事件转发（不入 result）
+        this.config.onReasoningDelta?.(event.text)
+        return
+      }
+      case 'assistant-message': {
+        if (!inOurTurn) return
+        if (event.usage !== null) this.usage = event.usage
+        if (event.text !== '') {
+          this.config.onAssistantMessage?.(event.turn, event.text, this.usage)
+          // 兜底：若该消息没有伴随 text-delta（纯推理模型、流记录缺失或 DSH
+          // 版本差异），在此推送最终文本并收集到 result 中。
           if (!this.hasTextDelta) {
-            this.collected += text
-            this.config.onTextDelta?.(text)
+            this.collected += event.text
+            this.config.onTextDelta?.(event.text)
           }
         }
         return
       }
-      case 'turn/end': {
+      case 'turn-end': {
         if (!inOurTurn) return
-        if (payload.reason !== undefined) this.reason = payload.reason
+        this.reason = event.reason
         return
       }
       default:
@@ -249,6 +233,7 @@ export class RunHub {
     agent: DriveableAgent
     messageFactory: TextMessageFactory
     onTextDelta?: (text: string) => void
+    onReasoningDelta?: (text: string) => void
     onAssistantMessage?: (turn: number, text: string, usage: Record<string, unknown> | null) => void
   }): Promise<RunOutcome> {
     const { sessionId } = input
@@ -260,6 +245,7 @@ export class RunHub {
       sessionId,
       taskId: input.taskId,
       onTextDelta: input.onTextDelta,
+      onReasoningDelta: input.onReasoningDelta,
       onAssistantMessage: input.onAssistantMessage,
     })
     this.active.set(sessionId, run)
@@ -277,8 +263,8 @@ export class RunHub {
     }
   }
 
-  /** 路由 session/event（index.ts 全局监听器调用）。 */
-  onSessionEvent(sessionId: string, event: SessionEventLike): void {
+  /** 路由归一化 Turn 事件（index.ts 经 decode.ts 解码后调用）。 */
+  onSessionEvent(sessionId: string, event: TurnEvent): void {
     const run = this.active.get(sessionId)
     if (run === undefined) return
     run.handleEvent(event)

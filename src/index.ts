@@ -18,35 +18,42 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { mkdirSync } from 'node:fs'
 import { NonceCache, SignatureVerifier } from './core/auth.ts'
 import { loadStaticFiles } from './http/admin-page.ts'
-import { normalizeConfig, type RawConfig, type ResolvedConfig } from './config/config.ts'
+import {
+  normalizeConfig, resolveRuntimeLayout, type RawConfig, type ResolvedConfig,
+} from './config/config.ts'
 import { openBridgeDb } from './core/db.ts'
 import { createSessionGateway, createTextMessageFactory } from './dsh/gateway.ts'
 import { createBridgeHandler } from './http/http-api.ts'
 import { rescueProcessing } from './core/rescue.ts'
 import type { LoggerLike } from './shared/runtime.ts'
 import { AgentPool } from './core/session-bridge.ts'
-import { RunHub, type SessionEventLike } from './core/runner.ts'
+import { RunHub } from './core/runner.ts'
 import { CallbackScheduler } from './core/scheduler.ts'
 import { FileLogger } from './core/logger.ts'
+import { decodeSessionEvent, type SessionEventLike } from './dsh/gateway.ts'
 
 /** 配置 schema 的 TS 接口（设计 §8.1 的扁平形态）。 */
 export interface Config {
+  runtime?: RawConfig['runtime']
   database?: RawConfig['database']
   auth?: RawConfig['auth']
   scheduler?: RawConfig['scheduler']
   http?: RawConfig['http']
-  logging?: RawConfig['logging']
 }
 
 /** 配置 schema：缺省值与 config.ts DEFAULTS 保持一致（双源防漂移注释）。 */
 export const Config: z<Config> = z.object({
+  runtime: z.object({
+    // 单一磁盘根；其下派生 data/（SQLite）、logs/（运行日志）、workspace/<clientId>/（会话工作区）
+    path: z.string().default('./runtime'),
+  }).default({ path: './runtime' }),
   database: z.object({
-    path: z.string().default('./data/dsh_biz_bridge.db'),
     journalMode: z.string().default('WAL'),
     busyTimeout: z.natural().default(5000),
-  }).default({ path: './data/dsh_biz_bridge.db', journalMode: 'WAL', busyTimeout: 5000 }),
+  }).default({ journalMode: 'WAL', busyTimeout: 5000 }),
   auth: z.object({
     timestampWindow: z.natural().default(300),
     nonceCacheSize: z.natural().min(100).default(10000),
@@ -66,9 +73,6 @@ export const Config: z<Config> = z.object({
   http: z.object({
     sseKeepalive: z.natural().min(1).default(15),
   }).default({ sseKeepalive: 15 }),
-  logging: z.object({
-    path: z.string().default('./logs'),
-  }).default({ path: './logs' }),
 })
 
 export const name = 'dsh-biz-bridge'
@@ -93,7 +97,15 @@ export function apply(ctx: Context, rawConfig: Config): void {
   say(`activating with config ${JSON.stringify(skipSecrets(config))}`)
 
   // 2. 存储层 + 激活时救援（§7.3）+ 过期数据清理
-  const db = openBridgeDb(config.database)
+  //    磁盘布局：单一 runtime 根 → data/logs/workspace 子目录（派生见 resolveRuntimeLayout）
+  const layout = resolveRuntimeLayout(config.runtime.path)
+  mkdirSync(layout.logsDir, { recursive: true })
+  mkdirSync(layout.workspaceDir, { recursive: true })
+  const db = openBridgeDb({
+    path: layout.dbFile,
+    journalMode: config.database.journalMode,
+    busyTimeout: config.database.busyTimeout,
+  })
   rescueProcessing(db, (message) => logger.info(message))
   const cleaned = db.cleanupExpired()
   if (cleaned > 0) {
@@ -102,7 +114,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
 
   // 3. 会话桥接层（§5.2）与事件归约 hub（§5.5）
-  const gateway = createSessionGateway(ctx)
+  const gateway = createSessionGateway(ctx, layout.workspaceDir)
   const pool = new AgentPool(gateway)
   const hub = new RunHub({
     begin: (sessionId) => pool.beginActivity(sessionId),
@@ -115,7 +127,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const nonceSeen = new NonceCache(config.auth.nonceCacheSize, config.auth.timestampWindow)
 
   // 5. 调度器（§7）
-  const fileLogger = new FileLogger(config.logging.path)
+  const fileLogger = new FileLogger(layout.logsDir)
   fileLogger.info('startup', 'plugin activating', { config: skipSecrets(config) as Record<string, unknown> })
   const runtime = {
     config,
@@ -136,9 +148,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
 
   // 6. 全局事件监听（ACP 桥接同款：插件级 ctx.on + 按 session 路由/所有权过滤）。
   //    会话串行（§5.8）保证同一 session 至多一个 ActiveRun，事件天然不串流。
+  //    session/event 先经 gateway 的 decode 归一化（DSH 0.1.5 v3 流模型），
+  //    runner 只消费与 DSH 版本解耦的 TurnEvent。
   ctx.on('session/event', (session, event: SessionEventLike) => {
     const sessionId = session.header.id
-    hub.onSessionEvent(sessionId, event)
+    for (const turnEvent of decodeSessionEvent(event)) {
+      hub.onSessionEvent(sessionId, turnEvent)
+    }
   })
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }: { agent: { session: { id: string } }; message: { id: string }; turn: number }) => {
     hub.onMessageClaimed(agent.session.id, message.id, turn)

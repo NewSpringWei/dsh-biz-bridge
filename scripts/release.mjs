@@ -53,15 +53,9 @@ writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
   files: ['lib/index.mjs', 'cordis.patch.yml', 'public/static/**', 'README.md'],
   license: 'MIT',
   dsh: { bundle: { patch: './cordis.patch.yml' } },
-  dependencies: { '@deepseek-ai/schemastery': '^3.18.2' },
-  peerDependencies: {
-    '@deepseek-ai/cordis': '^4.0.2',
-    '@deepseek-ai/dsh-agent': '^0.1.2-rc.1',
-    '@deepseek-ai/dsh-session': '^0.1.2-rc.1',
-    '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',
-    '@deepseek-ai/dsh-session-persistence': '^0.1.2-rc.1',
-    '@deepseek-ai/dsh-host-webserver': '^0.1.2-rc.1',
-  },
+  // 依赖/peer 直接从源码 manifest 取，避免双源漂移（发布基线 = 源码 package.json）
+  ...(manifest.dependencies === undefined ? {} : { dependencies: manifest.dependencies }),
+  ...(manifest.peerDependencies === undefined ? {} : { peerDependencies: manifest.peerDependencies }),
 }, null, 2) + '\n')
 
 mkdirSync(dirname(outFile), { recursive: true })

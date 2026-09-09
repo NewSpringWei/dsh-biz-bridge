@@ -1,11 +1,15 @@
 /**
- * Turn 驱动器归约测试（§5.4/§5.5/§9）：文本拼接与 usage、turn/end 成败判定、
- * agent/error 兜底去重、桥接主动取消、同 session 串行互斥。
+ * Turn 驱动器归约测试（§5.4/§5.5/§9）：归一化 TurnEvent 归约——文本拼接与
+ * usage、无 delta 时的全文兜底、turn/end 成败判定、agent/error 兜底去重、
+ * 桥接主动取消、同 session 串行互斥。
+ *
+ * 说明：runner 只消费归一化 TurnEvent；DSH 事件 → TurnEvent 的解码单独在
+ * tests/decode.test.ts 覆盖（src/dsh/decode.ts）。
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { RunHub, type DriveableAgent, type SessionEventLike } from '../src/core/runner.ts'
+import { RunHub, type DriveableAgent, type TurnEndReasonLike, type TurnEvent } from '../src/core/runner.ts'
 import type { ActivityController, TextUserMessage } from '../src/core/runner.ts'
 import type { RunOutcome } from '../src/shared/types.ts'
 
@@ -47,7 +51,6 @@ function makeActivity(): ActivityController & { events: Array<[string, string]> 
     events,
     begin: (sessionId: string) => events.push([sessionId, 'begin']),
     end: (sessionId: string) => events.push([sessionId, 'end']),
-    touch: (sessionId: string) => events.push([sessionId, 'touch']),
   }
 }
 
@@ -56,23 +59,23 @@ function factory(text: string): TextUserMessage {
   return { id: `msg-${++messageSeq}`, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
 }
 
-function chunk(turn: number, text: string): SessionEventLike {
-  return { type: 'assistant/chunk', data: { turn, step: 1, chunk: { type: 'text-delta', text } } }
+function textDelta(turn: number, text: string): TurnEvent {
+  return { type: 'text-delta', turn, text }
 }
 
-function reasoning(turn: number): SessionEventLike {
-  return { type: 'assistant/chunk', data: { turn, step: 1, chunk: { type: 'reasoning-delta', text: '隐藏推理' } } }
+function reasoningDelta(turn: number, text = '隐藏推理'): TurnEvent {
+  return { type: 'reasoning-delta', turn, text }
 }
 
-function assistantMessage(turn: number, text: string, usage?: Record<string, unknown>): SessionEventLike {
-  return { type: 'assistant/message', data: { turn, step: 1, message: { content: [{ type: 'text', text }] }, ...(usage === undefined ? {} : { usage }) } }
+function assistantMessage(turn: number, text: string, usage?: Record<string, unknown>): TurnEvent {
+  return { type: 'assistant-message', turn, text, usage: usage ?? null }
 }
 
-function turnEnd(turn: number, reason: Record<string, unknown>): SessionEventLike {
-  return { type: 'turn/end', data: { turn, reason } }
+function turnEnd(turn: number, reason: TurnEndReasonLike): TurnEvent {
+  return { type: 'turn-end', turn, reason }
 }
 
-async function drive(events: SessionEventLike[]): Promise<{ outcome: RunOutcome; activity: ReturnType<typeof makeActivity>; agent: ManualAgent }> {
+async function drive(events: TurnEvent[]): Promise<{ outcome: RunOutcome; activity: ReturnType<typeof makeActivity>; agent: ManualAgent }> {
   const activity = makeActivity()
   const hub = new RunHub(activity)
   const agent = new ManualAgent()
@@ -88,9 +91,9 @@ async function drive(events: SessionEventLike[]): Promise<{ outcome: RunOutcome;
 
 test('completed turn concatenates text-delta only and carries usage', async () => {
   const { outcome, activity, agent } = await drive([
-    chunk(1, '你'),
-    reasoning(1),
-    chunk(1, '好'),
+    textDelta(1, '你'),
+    reasoningDelta(1),
+    textDelta(1, '好'),
     assistantMessage(1, '你好', { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }),
     turnEnd(1, { kind: 'completed' }),
   ])
@@ -98,11 +101,11 @@ test('completed turn concatenates text-delta only and carries usage', async () =
   assert.equal(outcome.result, '你好') // reasoning-delta 不入 result（§5.5）
   assert.equal(outcome.usage?.total_tokens, 3)
   assert.equal(activity.events[0]?.[1], 'begin')
-  assert.equal(activity.events.at(-1)?.[1], 'touch')
+  assert.equal(activity.events.at(-1)?.[1], 'end')
   assert.equal(agent.cancelReason, undefined)
 })
 
-test('stream text callbacks fire per text-delta', async () => {
+test('message without preceding delta falls back to its full text (SSE + result)', async () => {
   const textFrames: string[] = []
   const messages: Array<{ text: string }> = []
   const activity = makeActivity()
@@ -118,16 +121,45 @@ test('stream text callbacks fire per text-delta', async () => {
     onAssistantMessage: (turn, text) => messages.push({ text }),
   })
   hub.onMessageClaimed(SESSION, agent.followed?.id ?? '', 1)
-  hub.onSessionEvent(SESSION, chunk(1, 'a'))
-  hub.onSessionEvent(SESSION, chunk(1, 'b'))
+  // 无 text-delta 前缀：assistant-message 本身作为兜底输出
+  hub.onSessionEvent(SESSION, assistantMessage(1, 'ab'))
+  hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'completed' }))
+  agent.finish()
+  const outcome = await pending
+  assert.equal(outcome.kind, 'completed')
+  assert.deepEqual(textFrames, ['ab'])
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0]?.text, 'ab')
+  assert.equal(outcome.result, 'ab')
+})
+
+test('text-delta stream frames forward per delta', async () => {
+  const textFrames: string[] = []
+  const reasoningFrames: string[] = []
+  const activity = makeActivity()
+  const hub = new RunHub(activity)
+  const agent = new ManualAgent()
+  const pending = hub.runTurn({
+    sessionId: SESSION,
+    taskId: 'task-3',
+    prompt: 'p',
+    agent,
+    messageFactory: factory,
+    onTextDelta: (text: string) => textFrames.push(text),
+    onReasoningDelta: (text: string) => reasoningFrames.push(text),
+  })
+  hub.onMessageClaimed(SESSION, agent.followed?.id ?? '', 1)
+  hub.onSessionEvent(SESSION, textDelta(1, 'a'))
+  hub.onSessionEvent(SESSION, reasoningDelta(1, 'r1'))
+  hub.onSessionEvent(SESSION, textDelta(1, 'b'))
   hub.onSessionEvent(SESSION, assistantMessage(1, 'ab'))
   hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'completed' }))
   agent.finish()
   const outcome = await pending
   assert.equal(outcome.kind, 'completed')
   assert.deepEqual(textFrames, ['a', 'b'])
-  assert.equal(messages.length, 1)
-  assert.equal(messages[0]?.text, 'ab')
+  assert.deepEqual(reasoningFrames, ['r1'])
+  assert.equal(outcome.result, 'ab')
 })
 
 test('turn/end error maps to failed with reason detail', async () => {
@@ -158,7 +190,7 @@ test('bridge cancel leads to cancelled and agent.cancel called', async () => {
   const agent = new ManualAgent()
   const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-c', prompt: 'p', agent, messageFactory: factory })
   hub.onMessageClaimed(SESSION, agent.followed?.id ?? '', 1)
-  hub.onSessionEvent(SESSION, chunk(1, '部分'))
+  hub.onSessionEvent(SESSION, textDelta(1, '部分'))
   assert.equal(hub.cancel(SESSION, 'client disconnected'), true)
   hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'aborted', reason: { kind: 'hook', reason: 'bizbridge: client disconnected' } }))
   agent.finish()

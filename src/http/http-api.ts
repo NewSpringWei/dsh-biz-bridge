@@ -9,6 +9,7 @@
  *   POST …/api/v1/tasks/{id}/logs   日志
  *   POST …/api/v1/tasks/{id}/cancel 取消
  *   POST …/api/v1/tasks/{id}/replay 重播
+ *   POST …/api/v1/tasks/{id}/redeliver 再次触发回调（重新投递，仅回调任务）
  *   POST …/api/v1/tasks/{id}/priority 优先级
  *   POST …/api/v1/stats             统计
  *   POST …/api/v1/sessions/{id}/messages  会话消息查询
@@ -25,7 +26,7 @@ import { ForbiddenError, NotFoundError } from '../shared/errors.ts'
 import { internalSessionId } from '../shared/session-id.ts'
 import { parseJsonBody, readBody, sendError, writeJson } from './http-util.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, replayOp, statsOp, sessionMessagesOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, statsOp, sessionMessagesOp,
 } from '../core/ops.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import { validateSubmitInput } from '../core/submission.ts'
@@ -193,8 +194,8 @@ async function dispatch(
     handleCallbackTestStatus(cbTestMatch[1] ?? '', res)
     return
   }
-  // /bizbridge/api/v1/tasks/<id>[/logs|cancel|replay|priority]
-  const match = /^\/bizbridge\/api\/v1\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(logs|cancel|replay|priority))?$/.exec(pathname)
+  // /bizbridge/api/v1/tasks/<id>[/logs|cancel|replay|redeliver|priority]
+  const match = /^\/bizbridge\/api\/v1\/tasks\/([A-Za-z0-9_-]{1,128})(?:\/(logs|cancel|replay|redeliver|priority))?$/.exec(pathname)
   if (match !== null) {
     const taskId = match[1] ?? ''
     const action = match[2]
@@ -217,7 +218,7 @@ async function dispatch(
       return
     }
     if (action === 'cancel') {
-      // 需先读任务以取得 session（agent 取消用），再执行取消
+      // 需先读任务以取得 session（agent 取消用），再执行取消（业务级/管理级均可取消处理中任务）
       const task = db.getTask(taskId)
       if (task === undefined) throw new NotFoundError(`task "${taskId}" not found`)
       if (task.client_id !== caller.clientId && !caller.scope.includes('admin')) {
@@ -226,13 +227,20 @@ async function dispatch(
       fileLogger.info('cancel', `task ${taskId} by ${caller.clientId}`, { sessionId: task.session_id, status: task.status })
       const result = cancelOp(db, taskId, caller)
       if (result.needAgentCancel) {
-        const cancelled = runtime.hub.cancel(task.session_id, `admin cancelled task ${taskId}`)
-        runtime.db.addLog(taskId, 'cancelled', `管理级取消：中止 live agent（${cancelled ? '已通知' : '无活动 turn'}）`, {}, nowIso())
+        const cancelled = runtime.hub.cancel(task.session_id, `caller cancelled task ${taskId}`)
+        runtime.db.addLog(taskId, 'cancelled', `调用方取消：中止 live agent（${cancelled ? '已通知' : '无活动 turn'}）`, {}, nowIso())
         if (!cancelled) {
           // 处理中但 run 尚未注册（认领窗口）——由调度器执行前的状态复核兜底
           runtime.logger.warn(`cancel task ${taskId}: no active turn found; scheduler re-check guards execution`)
         }
       }
+      writeJson(res, 200, result)
+      return
+    }
+    if (action === 'redeliver') {
+      fileLogger.info('redeliver', `task ${taskId} by ${caller.clientId}`)
+      const result = redeliverOp(db, taskId, caller)
+      runtime.db.addLog(taskId, 'callback', result.message, { action: 'redeliver' }, nowIso())
       writeJson(res, 200, result)
       return
     }

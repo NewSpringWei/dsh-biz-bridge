@@ -23,6 +23,8 @@
     <div class="sidebar-title">通信接口</div>
     <a href="#sec-stream" class="active">流式 stream</a>
     <a href="#sec-callback">回调 callback</a>
+    <div class="sidebar-title">回调调试</div>
+    <a href="#sec-redeliver">回调追踪</a>
     <div class="sidebar-title">自有任务</div>
     <a href="#sec-mine">业务级查询</a>
   </aside>
@@ -33,9 +35,9 @@
     <section class="panel" id="sec-stream">
       <h2>流式 stream —— SSE</h2>
       <div class="field"><label>session_id</label><input id="sSession" value="sess-1" autocomplete="off"></div>
-      <div class="field"><label>biz_id（每次提交唯一）</label><input id="sBiz" value="REQ-STREAM-1" autocomplete="off"></div>
+      <div class="field"><label>biz_id（每次提交唯一）<button id="btnStreamId" type="button" class="small btn-inline">生成 biz_id</button></label><input id="sBiz" value="REQ-STREAM-1" autocomplete="off"></div>
       <div class="field"><label>prompt</label><textarea id="sPrompt" rows="4">你好，请用一句话介绍自己。</textarea></div>
-      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModels" class="small" style="margin-left:8px">刷新模型</button></label>
+      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModels" type="button" class="small btn-inline">刷新模型</button></label>
         <div class="params-form">
           <div class="row">
             <div class="field"><label>provider</label><select id="sProvider"><option value="">默认</option></select></div>
@@ -49,8 +51,7 @@
       </div>
       <div class="row">
         <button id="btnStream" class="primary">开始流式</button>
-        <button id="btnStreamStop" disabled>断开（取消）</button>
-        <button id="btnStreamId" class="small">生成 biz_id</button>
+        <button id="btnStreamStop" class="danger" disabled>断开（取消）</button>
       </div>
       <pre class="view" id="sseView">流式内容将实时显示在这里…</pre>
     </section>
@@ -58,10 +59,10 @@
     <section class="panel" id="sec-callback">
       <h2>回调 callback —— 入队</h2>
       <div class="field"><label>session_id</label><input id="cSession" value="sess-1" autocomplete="off"></div>
-      <div class="field"><label>biz_id（每次提交唯一）</label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
-      <div class="field"><label>callback_url（任务完成后插件 POST 到此处）<button id="btnCbTestUrl" class="small" style="margin-left:8px">填入测试接收地址</button></label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
+      <div class="field"><label>biz_id（每次提交唯一）<button id="btnCbId" type="button" class="small btn-inline">生成 biz_id</button></label><input id="cBiz" value="REQ-CALLBACK-1" autocomplete="off"></div>
+      <div class="field"><label>callback_url（任务完成后插件 POST 到此处）<button id="btnCbTestUrl" type="button" class="small btn-inline">填入测试接收地址</button></label><input id="cUrl" value="http://127.0.0.1:8080/bizbridge-cb" autocomplete="off"></div>
       <div class="field"><label>prompt</label><textarea id="cPrompt" rows="3">请做一个简要分析。</textarea></div>
-      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModelsCb" class="small" style="margin-left:8px">刷新模型</button></label>
+      <div class="field"><label>模型参数（可选，从 DSH 动态读取）<button id="btnLoadModelsCb" type="button" class="small btn-inline">刷新模型</button></label>
         <div class="params-form">
           <div class="row">
             <div class="field"><label>provider</label><select id="cProvider"><option value="">默认</option></select></div>
@@ -75,8 +76,6 @@
       </div>
       <div class="row">
         <button id="btnCallback" class="primary">提交回调</button>
-        <button id="btnCallbackDup" class="small">同参数重发（幂等 409 演示）</button>
-        <button id="btnCbId" class="small">生成 biz_id</button>
       </div>
       <pre class="view" id="cbView">回调入队结果将显示在这里…（再次提交相同 biz_id 会得到 409 DUPLICATE_BIZ_ID）</pre>
       <div id="cbTracker" style="display:none;margin-top:10px">
@@ -86,10 +85,27 @@
         </div>
         <pre class="view" id="cbResultView">等待回调到达…</pre>
       </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnGoRd" class="small">追踪“再次回调”到达 →</button>
+        <span class="msg">投递到测试接收器的任务，可在“回调追踪”页观察每次重新投递。</span>
+      </div>
+    </section>
+
+    <section class="panel" id="sec-redeliver">
+      <h2>回调追踪（测试接收器）</h2>
+      <p class="msg" style="margin:2px 0 8px">两个入口：① 在<b>业务级查询</b>对该任务点“再次回调”会自动带到这里并开始观察；② 手动粘贴 task_id 观察。仅适用于 <code>callback_url</code> 指向测试接收器的任务。</p>
+      <div class="row" style="align-items:center">
+        <div class="field grow"><label>原任务 task_id</label>
+          <input id="rdTaskId" placeholder="粘贴 task_id（其回调地址需指向测试接收器）" autocomplete="off"></div>
+        <button id="btnRdWatch" class="small">追踪再次回调</button>
+        <span id="msgRd" class="msg"></span>
+      </div>
+      <pre class="view" id="rdView" style="margin-top:6px">再次回调到达内容将显示在这里…（每 2s 轮询一次测试接收器，最多 4 分钟；可多次点“再次回调”，这里会显示每次新到达）</pre>
     </section>
 
     <section class="panel" id="sec-mine">
       <h2>业务级自有任务（只能查看/操作自己的任务）</h2>
+      <p class="msg" style="margin:4px 0 8px">操作范围：<b>取消</b>＝未开始 / 进行中（处理中任务将中止 agent）；<b>重播</b>＝仅已完成处理（无论成败）的回调任务；<b>再次回调</b>＝已完成执行（含送达耗尽 callback_failed）的回调任务，立即向 callback_url 重新 POST 执行结果。</p>
       <div class="row">
         <button id="btnMine" class="primary">查询我的任务</button>
         <button id="btnMineNext">下一页</button>
@@ -348,14 +364,83 @@
     }, 2000)
   }
   $('btnCallback').onclick = submitCallback
-  $('btnCallbackDup').onclick = function () {
-    B.showMsg($('msgComms'), '用相同参数重发（若上次已成功入队，预期 409 DUPLICATE_BIZ_ID）…', '')
-    submitCallback()
+
+  /* ---- 追踪“再次回调”到达（测试接收器） ---- */
+  var rdTimer = null
+  $('btnRdWatch').onclick = async function () {
+    var id = $('rdTaskId').value.trim()
+    if (!id) { B.showMsg($('msgRd'), '请输入原任务 task_id', 'err'); return }
+    if (rdTimer) { clearInterval(rdTimer); rdTimer = null }
+    B.showMsg($('msgRd'), '校验任务…', '')
+    try {
+      // 先校验：仅当该任务投递到测试接收器时才可在此观察再次到达
+      var r = await B.request('/api/v1/tasks/' + encodeURIComponent(id), {})
+      if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
+      var t = r.data
+      if (t.type !== 'callback' || String(t.callback_url || '').indexOf('/api/v1/callback-test/receive') < 0) {
+        B.showMsg($('msgRd'), '该任务未投递到测试接收器（type=' + esc(t.type) + '，callback_url=' + esc(t.callback_url || '无') + '），本追踪仅适用测试接收器', 'err')
+        return
+      }
+      $('rdView').textContent = '等待再次回调到达…（status=' + esc(t.status) + '，可在查询页点“再次回调”触发）'
+      B.showMsg($('msgRd'), '开始观察 task ' + id.slice(0, 12) + '…（每 2s 轮询，最多 4 分钟）', 'ok')
+      var attempts = 0, arrivals = 0, lastAt = ''
+      rdTimer = setInterval(async function () {
+        attempts++
+        if (attempts > 120) {
+          clearInterval(rdTimer); rdTimer = null
+          B.showMsg($('msgRd'), '观察超时（4 分钟）。可再次触发回调后重新追踪', 'err')
+          return
+        }
+        try {
+          var q = await B.request('/api/v1/callback-test/' + encodeURIComponent(id), {})
+          if (!q.ok || !q.data || !q.data.received) {
+            B.showMsg($('msgRd'), '等待中…（' + attempts + '）', '')
+            return
+          }
+          if (q.data.received_at !== lastAt) {
+            lastAt = q.data.received_at
+            arrivals++
+            B.showMsg($('msgRd'), '✅ 第 ' + arrivals + ' 次回调到达 ' + lastAt + '（可继续等下一次再次回调）', 'ok')
+            $('rdView').textContent = '收到时间: ' + lastAt + '（第 ' + arrivals + ' 次）\n' + B.fmtJson(q.data.raw_body)
+          }
+        } catch (e) { /* 单次轮询失败继续 */ }
+      }, 2000)
+    } catch (e) { B.showMsg($('msgRd'), String(e), 'err') }
+  }
+
+  /* 切换左侧面板（与 initSidebar 一致：模拟点击对应锚点） */
+  function goSection(id) {
+    var anchor = document.querySelector('.sidebar a[href="#' + id + '"]')
+    if (anchor) anchor.click()
+  }
+  $('btnGoRd').onclick = function () {
+    goSection('sec-redeliver')
+    $('rdTaskId').focus()
   }
 
   /* ---- 业务级自有任务 ---- */
   $('btnMine').onclick = async function () { minePage = 1; await loadMine() }
   $('btnMineNext').onclick = async function () { minePage++; await loadMine() }
+  // 操作按钮按状态/类型显隐（与 API 规则一致）
+  function canCancel(status) {
+    return status === 'queued' || status === 'received' || status === 'processing'
+  }
+  function mineActions(t) {
+    var h = '<button class="small" data-mine="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
+      '<button class="small" data-mine="logs" data-id="' + esc(t.task_id) + '">日志</button>'
+    if (canCancel(t.status)) {
+      h += ' <button class="small danger" data-mine="cancel" data-id="' + esc(t.task_id) + '">取消</button>'
+    }
+    // 重播：仅已完成处理（无论成败，含送达耗尽 callback_failed）的回调任务
+    if (t.type === 'callback' && (t.status === 'completed' || t.status === 'failed' || t.status === 'callback_failed')) {
+      h += ' <button class="small" data-mine="replay" data-id="' + esc(t.task_id) + '">重播</button>'
+    }
+    // 再次触发回调：仅已完成执行（含送达耗尽 callback_failed）的回调任务
+    if (t.type === 'callback' && (t.status === 'completed' || t.status === 'callback_failed')) {
+      h += ' <button class="small" data-mine="redeliver" data-id="' + esc(t.task_id) + '">再次回调</button>'
+    }
+    return h ? '<div class="ops">' + h + '</div>' : '<span class="msg">—</span>'
+  }
   async function loadMine() {
     B.showMsg($('msgMine'), '请求中…', '')
     try {
@@ -366,10 +451,7 @@
           '<td>' + esc(t.task_id.slice(0, 8)) + '</td><td>' + esc(t.biz_id) + '</td><td>' + t.replay_seq + '</td>' +
           '<td>' + esc(t.session_id.slice(0, 14)) + '</td><td>' + esc(t.type) + '</td><td>' + esc(t.status) + '</td>' +
           '<td>' + t.priority + '</td><td>' + esc(t.created_at) + '</td>' +
-          '<td><button class="small" data-mine="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
-          '<button class="small" data-mine="logs" data-id="' + esc(t.task_id) + '">日志</button> ' +
-          '<button class="small" data-mine="cancel" data-id="' + esc(t.task_id) + '">取消</button> ' +
-          '<button class="small" data-mine="replay" data-id="' + esc(t.task_id) + '">重播</button></td></tr>'
+          '<td>' + mineActions(t) + '</td></tr>'
       }).join('')
       $('mineRows').innerHTML = rows || '<tr><td colspan="9" class="msg">无任务</td></tr>'
       B.showMsg($('msgMine'), '第 ' + r.data.page + ' 页 / 共 ' + r.data.total + ' 条', 'ok')
@@ -379,15 +461,22 @@
     var button = ev.target.closest ? ev.target.closest('button[data-mine]') : null
     if (!button) return
     var id = button.getAttribute('data-id'), act = button.getAttribute('data-mine')
-    if (act === 'cancel' && !window.confirm('确定取消任务 ' + id + ' ？（业务级仅能取消自己 queued/received 的任务）')) return
-    if (act === 'replay' && !window.confirm('确定重播任务 ' + id + ' ？（仅 callback 且非排队状态）')) return
+    if (act === 'cancel' && !window.confirm('确定取消任务 ' + id + ' ？（未开始/进行中的任务会被取消，处理中任务将中止 agent）')) return
+    if (act === 'replay' && !window.confirm('确定重播任务 ' + id + ' ？（仅已完成处理的回调任务，将生成 replay_seq+1 的新任务）')) return
+    if (act === 'redeliver' && !window.confirm('确定再次触发任务 ' + id + ' 的回调？（将立即向该任务 callback_url 重新 POST 执行结果）')) return
     try {
       var path = '/api/v1/tasks/' + encodeURIComponent(id) + (act === 'detail' || act === 'logs' ? (act === 'logs' ? '/logs' : '') : '/' + act)
       var body = act === 'logs' ? { page: 1, page_size: 50 } : {}
       var r = await B.request(path, body)
       if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
       B.showResult($('mineView'), r)
-      if (act === 'cancel' || act === 'replay') await loadMine()
+      if (act === 'cancel' || act === 'replay' || act === 'redeliver') await loadMine()
+      // 再次回调成功 → 带 task_id 跳到“回调追踪”并自动开始观察
+      if (act === 'redeliver') {
+        $('rdTaskId').value = id
+        goSection('sec-redeliver')
+        $('btnRdWatch').click()
+      }
     } catch (e) { B.showMsg($('msgMine'), String(e), 'err') }
   }
   $('btnMyStats').onclick = async function () {

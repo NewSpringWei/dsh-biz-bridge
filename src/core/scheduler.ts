@@ -14,6 +14,7 @@
  */
 
 import { parseAgentOverridesLenient } from './agent-options.ts'
+import { CALLBACK_TEST_TOKEN_HEADER, isCallbackTestReceiver } from '../shared/callback-test.ts'
 import { CwdMismatchError, SessionBusyError } from '../shared/errors.ts'
 import { externalSessionId } from '../shared/session-id.ts'
 import { nowIso } from './db.ts'
@@ -259,9 +260,15 @@ export class CallbackScheduler {
   /** 单次 HTTP POST（超时受 callbackTimeout 秒约束；2xx 成功）。 */
   private async postJson(url: string, body: Record<string, unknown>, timeoutSeconds: number): Promise<DeliverResult> {
     try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      // 仅当目标是本插件自带的回调测试接收器时附带内部令牌（F2 修复）。
+      // 业务方自己的 callback_url 绝不携带该令牌，避免泄漏。
+      if (isCallbackTestReceiver(url)) {
+        headers[CALLBACK_TEST_TOKEN_HEADER] = this.runtime.callbackTestToken
+      }
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutSeconds * 1000),
       })

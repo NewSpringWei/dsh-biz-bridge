@@ -216,10 +216,34 @@ function safeReason(reason: TurnEndReasonLike): Record<string, unknown> {
 /** 由外部（index.ts 的全局监听器）按 sessionId 路由到活动 run。 */
 export class RunHub {
   private readonly active = new Map<string, ActiveRun>()
+  /**
+   * 已占位、尚未进入 active 的会话（§5.8 会话串行）。
+   *
+   * 用于消除"预检通过 → runTurn 标记 active"之间的并发窗口：`reserve()` 是同步
+   * check-and-set，在 Node 单线程下与预检构成原子操作，因此同一会话的第二个并发
+   * 请求必然被拒（409 SESSION_BUSY），而不会走到 openAgent 撞上 DSH 的写句柄
+   * （`already owned by an active write handle`）而报 500。
+   */
+  private readonly reserved = new Set<string>()
   private readonly activity: ActivityController
 
   constructor(activity: ActivityController) {
     this.activity = activity
+  }
+
+  /**
+   * 原子占位。返回 false 表示该会话已有进行中任务或已被占位。
+   * 必须与 `release()` 配对（放 finally），否则会话会被永久卡住。
+   */
+  reserve(sessionId: string): boolean {
+    if (this.active.has(sessionId) || this.reserved.has(sessionId)) return false
+    this.reserved.add(sessionId)
+    return true
+  }
+
+  /** 释放占位。 */
+  release(sessionId: string): void {
+    this.reserved.delete(sessionId)
   }
 
   /**
@@ -288,9 +312,9 @@ export class RunHub {
     return true
   }
 
-  /** 会话当前是否有进行中任务。 */
+  /** 会话当前是否有进行中任务（含"已占位但尚未开跑"的窗口）。 */
   isBusy(sessionId: string): boolean {
-    return this.active.has(sessionId)
+    return this.active.has(sessionId) || this.reserved.has(sessionId)
   }
 
   /** 全部活动任务取消（卸载兜底前调用）。 */

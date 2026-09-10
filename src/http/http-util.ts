@@ -42,7 +42,9 @@ export function parseJsonBody(raw: Buffer): Record<string, unknown> {
 
 /** 写 JSON 响应。 */
 export function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  if (res.writableEnded) return
+  // headersSent 也必须挡：若 SSE 已经 beginSse() 发送了响应头，再 writeHead 会抛
+  // ERR_HTTP_HEADERS_SENT，使错误处理路径自身崩溃、连接既不收尾也不报错（复审 F3）。
+  if (res.writableEnded || res.headersSent) return
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(payload)
@@ -50,7 +52,7 @@ export function writeJson(res: ServerResponse, status: number, body: unknown): v
 
 /** 统一错误响应（§6.3.1）。 */
 export function sendError(res: ServerResponse, error: unknown): void {
-  if (res.writableEnded) return
+  if (res.writableEnded || res.headersSent) return
   if (error instanceof BizError) {
     writeJson(res, ERROR_HTTP_STATUS[error.code], error.toBody())
     return

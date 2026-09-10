@@ -23,10 +23,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { ForbiddenError, NotFoundError } from '../shared/errors.ts'
+import { CALLBACK_TEST_TOKEN_HEADER } from '../shared/callback-test.ts'
+import type { Caller } from '../core/auth.ts'
 import { internalSessionId } from '../shared/session-id.ts'
 import { parseJsonBody, readBody, sendError, writeJson } from './http-util.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, statsOp, sessionMessagesOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, requireTaskOwned, statsOp, sessionMessagesOp,
 } from '../core/ops.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import { validateSubmitInput } from '../core/submission.ts'
@@ -122,7 +124,7 @@ export function createBridgeHandler(runtime: BridgeRuntime) {
       if (pathname === '/bizbridge/api/v1/callback-test/receive' && req.method === 'POST') {
         const rawBody = await readBody(req)
         const body = parseJsonBody(rawBody)
-        handleCallbackTestReceive(body, res)
+        handleCallbackTestReceive(runtime, req.headers, body, res)
         return
       }
       // 其余全部 POST + 签名
@@ -177,21 +179,26 @@ async function dispatch(
     return
   }
   // /bizbridge/api/v1/sessions/<id>/messages
-  const sessionMatch = /^\/bizbridge\/api\/v1\/sessions\/([A-Za-z0-9:._-]{1,128})\/messages$/.exec(pathname)
+  //   <id> 为内部会话 id（`<clientId>:<type>:<外部 id>`，含冒号）。浏览器侧习惯用
+  //   encodeURIComponent 拼接，会把 `:` 编成 `%3A`；这里宽松匹配后再解码，两种写法都接受，
+  //   避免"页面能发、路由不认"（2026-09-10 实测：编码形式曾 404 route not found）。
+  const sessionMatch = /^\/bizbridge\/api\/v1\/sessions\/([A-Za-z0-9:._%-]{1,512})\/messages$/.exec(pathname)
   if (sessionMatch !== null) {
-    const sessionId = sessionMatch[1] ?? ''
-    fileLogger.info('session-messages', `query by ${caller.clientId}`, { sessionId })
-    if (runtime.sessionQuery === undefined) {
-      writeJson(res, 501, { error: { code: 'NOT_IMPLEMENTED', message: 'sessionQuery service is not available', details: {} } })
+    const sessionId = decodeSessionIdParam(sessionMatch[1] ?? '')
+    if (sessionId !== undefined) {
+      fileLogger.info('session-messages', `query by ${caller.clientId}`, { sessionId })
+      if (runtime.sessionQuery === undefined) {
+        writeJson(res, 501, { error: { code: 'NOT_IMPLEMENTED', message: 'sessionQuery service is not available', details: {} } })
+        return
+      }
+      writeJson(res, 200, await sessionMessagesOp(runtime.sessionQuery, sessionId, caller, body))
       return
     }
-    writeJson(res, 200, await sessionMessagesOp(runtime.sessionQuery, sessionId, caller, body))
-    return
   }
-  // 回调测试：状态查询（需签名，admin scope）
+  // 回调测试：状态查询（需签名；仅 admin 或该任务所属 client，禁止跨 client）
   const cbTestMatch = /^\/bizbridge\/api\/v1\/callback-test\/([A-Za-z0-9_-]{1,128})$/.exec(pathname)
   if (cbTestMatch !== null) {
-    handleCallbackTestStatus(cbTestMatch[1] ?? '', res)
+    handleCallbackTestStatus(runtime, cbTestMatch[1] ?? '', caller, res)
     return
   }
   // /bizbridge/api/v1/tasks/<id>[/logs|cancel|replay|redeliver|priority]
@@ -327,6 +334,22 @@ function enqueueCallback(
   })
 }
 
+/**
+ * 解析会话消息路径里的 `id`：接受字面量冒号，也接受百分号编码（`:` → `%3A`）。
+ * 解码后按 1-128 位 `[A-Za-z0-9:._-]` 重新校验；非法返回 undefined（调用方落到 404）。
+ */
+function decodeSessionIdParam(raw: string): string | undefined {
+  let decoded = raw
+  if (raw.includes('%')) {
+    try {
+      decoded = decodeURIComponent(raw)
+    } catch {
+      return undefined
+    }
+  }
+  return /^[A-Za-z0-9:._-]{1,128}$/.test(decoded) ? decoded : undefined
+}
+
 // ─── 回调测试接收器（内存存储，仅用于调试页面端到端测试） ───
 
 interface CallbackTestEntry {
@@ -341,8 +364,32 @@ interface CallbackTestEntry {
 const callbackTestStore = new Map<string, CallbackTestEntry>()
 const CALLBACK_TEST_TTL_MS = 30 * 60 * 1000 // 30 分钟自动清理
 
-/** 回调测试接收端点：scheduler POST 到此，存储到内存。 */
-function handleCallbackTestReceive(body: unknown, res: ServerResponse): void {
+/**
+ * 回调测试接收端点：**仅本插件的调度器可写**。
+ *
+ * 该端点曾经免签名——任何能连到端口的人都能注入伪造的“回调已到达”，
+ * 页面会把它当成真实投递展示（复审 F2）。现在要求携带每次激活随机生成的
+ * 内部令牌；令牌从不暴露给客户端，故外部无法写入，而页面“回调追踪”照常工作
+ * （投递始终由调度器完成，见 scheduler.postJson）。
+ */
+function handleCallbackTestReceive(
+  runtime: BridgeRuntime,
+  headers: IncomingMessage['headers'],
+  body: unknown,
+  res: ServerResponse,
+): void {
+  const token = headers[CALLBACK_TEST_TOKEN_HEADER]
+  if (typeof token !== 'string' || token !== runtime.callbackTestToken) {
+    runtime.fileLogger.warn('callback-test', 'rejected write to callback test receiver: missing/invalid internal token')
+    writeJson(res, 403, {
+      error: {
+        code: 'FORBIDDEN',
+        message: 'callback test receiver only accepts deliveries from the bridge scheduler',
+        details: {},
+      },
+    })
+    return
+  }
   const entry = body as Record<string, unknown>
   const taskId = typeof entry.task_id === 'string' ? entry.task_id : 'unknown'
   const now = new Date().toISOString()
@@ -362,8 +409,17 @@ function handleCallbackTestReceive(body: unknown, res: ServerResponse): void {
   writeJson(res, 200, { ok: true, task_id: taskId, received_at: now })
 }
 
-/** 回调测试状态查询：前端轮询此端点等待回调到达。 */
-function handleCallbackTestStatus(taskId: string, res: ServerResponse): void {
+/**
+ * 回调测试状态查询：需签名，且仅 `admin` 或**该任务所属 client** 可查（复审 F1）。
+ * 归属判定复用 `requireTaskOwned`：admin 放行、非属主 403、任务不存在 404 —— 杜绝跨 client 读取。
+ */
+function handleCallbackTestStatus(
+  runtime: BridgeRuntime,
+  taskId: string,
+  caller: Caller,
+  res: ServerResponse,
+): void {
+  requireTaskOwned(runtime.db, taskId, caller)
   const entry = callbackTestStore.get(taskId)
   if (entry === undefined) {
     writeJson(res, 200, { task_id: taskId, received: false })

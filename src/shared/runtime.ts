@@ -76,6 +76,11 @@ export interface BridgeRuntime {
   fileLogger: FileLogger
   /** 第一方参考/调试页面静态资源（index/admin/client/utils + common.js + style.css）。 */
   staticFiles: StaticFiles
+  /**
+   * 回调测试接收端点的内部令牌：每次插件激活随机生成，仅进程内共享。
+   * 该端点拒绝外部写入——只有本插件的调度器投递回调时会带上它（见 F2 修复）。
+   */
+  callbackTestToken: string
 }
 
 /** 认证产物（http 层验签后传入 handler）。 */

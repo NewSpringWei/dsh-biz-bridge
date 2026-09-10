@@ -61,7 +61,10 @@ test('timestamp outside window rejected (401 semantics)', () => {
   const { publicKey, privateKey } = keyPair()
   const verifier = verifierWith([{ clientId: 'biz-a', publicKey, scope: ['stream'] }])
   const body = Buffer.from('{}')
-  const ts = String(NOW + 301)
+  // 取远超窗口的值（3600s ≫ 300s）。不要用 301 这类仅 1 秒余量的边界值：
+  // NOW 在模块加载时捕获，到该用例执行之间的秒级漂移会让 |now - ts| 退化成恰好
+  // 300（仍未超出窗口）→ 偶发 "Missing expected exception"。
+  const ts = String(NOW + 3600)
   const headers = makeHeaders({ 'x-signature': sign(privateKey, 'POST', '/p', body, ts, 'n'), 'x-timestamp': ts, 'x-nonce': 'n' })
   assert.throws(() => verifier.verify(headers, 'POST', '/p', body, new NoopNonceSeen()), UnauthorizedError)
 })

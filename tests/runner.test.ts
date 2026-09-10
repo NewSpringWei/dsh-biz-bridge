@@ -231,3 +231,31 @@ test('session serialization: second run on same session rejected while active', 
   const outcome = await second
   assert.equal(outcome.kind, 'completed')
 })
+
+test('RunHub.reserve: 同会话并发占位互斥（消除预检→runTurn 之间的竞态窗口）', () => {
+  const hub = new RunHub(makeActivity())
+  assert.equal(hub.reserve('s1'), true)
+  // 第二个并发请求必须被拒。修复前两次预检都会通过，第二个随后在 openAgent 撞上
+  // DSH 的 "already owned by an active write handle" 而落 500（真机 3/3 复现）。
+  assert.equal(hub.reserve('s1'), false)
+  assert.equal(hub.isBusy('s1'), true)
+  // 其他会话不受影响
+  assert.equal(hub.reserve('s2'), true)
+  // 释放后可再次占位
+  hub.release('s1')
+  assert.equal(hub.isBusy('s1'), false)
+  assert.equal(hub.reserve('s1'), true)
+})
+
+test('RunHub.reserve: 运行期间占位被拒，收敛后可再次占位', async () => {
+  const hub = new RunHub(makeActivity())
+  const agent = new ManualAgent()
+  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', prompt: 'p', agent, messageFactory: factory })
+  assert.equal(hub.reserve(SESSION), false)
+  hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'completed' }))
+  agent.finish()
+  await pending
+  assert.equal(hub.reserve(SESSION), true)
+  hub.release(SESSION)
+  assert.equal(hub.isBusy(SESSION), false)
+})

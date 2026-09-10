@@ -398,6 +398,35 @@ export function statsOp(db: BridgeDb, caller: Caller): Record<string, unknown> {
 }
 
 /**
+ * DSH sessionQuery 用**稳定 code** 表达失败（`SessionQueryError`，码集合见 DSH
+ * `session-query/src/config.ts`）。这里按 code 判定"会话不存在"，不匹配错误文案——
+ * 文案随时可能改，code 才是契约。
+ */
+function isSessionNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null
+    && (error as { code?: unknown }).code === 'SESSION_QUERY_SESSION_NOT_FOUND'
+}
+
+/**
+ * 读取会话快照。"会话不存在"属于**调用方输入问题**，必须映射为 404 `NOT_FOUND`，
+ * 不能漏成 500（否则会污染 5xx 告警、被客户端当作可重试错误反复重试）。
+ * 其余失败（持久化损坏、IO 故障）如实上抛 → 500，不掩盖真实的服务端问题。
+ */
+async function readSessionOr404(
+  sessionQuery: SessionQueryLike,
+  sessionId: string,
+): Promise<Awaited<ReturnType<SessionQueryLike['readSession']>>> {
+  try {
+    return await sessionQuery.readSession(sessionId)
+  } catch (error: unknown) {
+    if (isSessionNotFoundError(error)) {
+      throw new NotFoundError(`session "${sessionId}" not found`)
+    }
+    throw error
+  }
+}
+
+/**
  * 会话消息查询（按 session_id 投影对话内容）。
  * 从 DSH sessionQuery 服务读取完整事件流，过滤并转换为业务友好的消息格式。
  */
@@ -418,7 +447,7 @@ export async function sessionMessagesOp(
   }
   const { page, pageSize } = resolvePage(body.page, body.page_size)
 
-  const snapshot = await sessionQuery.readSession(sessionId)
+  const snapshot = await readSessionOr404(sessionQuery, sessionId)
   const messages = projectMessages(snapshot.events)
 
   const total = messages.length
@@ -441,14 +470,18 @@ function projectMessages(
   const messages: Array<Record<string, unknown>> = []
   for (const event of events) {
     if (event.type === 'user/message') {
-      const data = (event.data ?? {}) as { message?: unknown; time?: number }
-      const text = extractTextContent(data.message)
+      // DSH 0.1.5：`user/message` 事件的 data **就是 UserMessage 本身**，不是 `{ message }` 包装。
+      // 对照 DSH `session/src/index.ts` 的取法：`type === 'user/message' ? record : record.message`。
+      // 这里兼容两种形状（先探测 `.message`），避免宿主版本差异导致 user 消息被静默丢弃。
+      const data = event.data as Record<string, unknown> | null | undefined
+      const message = data != null && typeof data === 'object' && 'message' in data ? data.message : data
+      const text = extractTextContent(message)
       if (text !== '') {
         messages.push({
           role: 'user',
           content: text,
           seq: event.seq ?? null,
-          timestamp: data.time ?? null,
+          timestamp: (data as { time?: number } | null | undefined)?.time ?? null,
         })
       }
     } else if (event.type === 'assistant/message') {

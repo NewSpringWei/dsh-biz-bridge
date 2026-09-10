@@ -19,19 +19,11 @@ import { beginSse, endSse, sendError, sseData, ssePing, writeJson } from './http
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import type { Caller } from '../core/auth.ts'
 import { nowIso } from '../core/db.ts'
-import { validateSubmitInput } from '../core/submission.ts'
+import { validateSubmitInput, type ValidatedSubmit } from '../core/submission.ts'
 import { internalSessionId } from '../shared/session-id.ts'
 import type { TaskRow } from '../shared/types.ts'
 
 const SSE_KEEPALIVE_MS = 15_000
-
-/** 提交前的会话忙预检（§5.8 流式 409）。 */
-function busyPrecheck(runtime: BridgeRuntime, sessionId: string): string | undefined {
-  if (runtime.hub.isBusy(sessionId) || runtime.pool.isBusy(sessionId)) {
-    return `session "${sessionId}" already has a running task`
-  }
-  return undefined
-}
 
 /** 执行前失败以终态落库（§3.1 入库后失败兜底）。 */
 function finalizePreExecutionFailure(
@@ -62,16 +54,34 @@ export async function handleStreamSubmit(
   body: Record<string, unknown>,
   res: ServerResponse,
 ): Promise<void> {
-  const { db } = runtime
-  // 1. 校验 + 会话忙预检 → 409（不入库；同 session 已有进行中任务，§5.8）
+  // 1. 校验 + 会话串行占位（§5.8）
+  //    占位必须是**同步 check-and-set**：此前是"先预检、后在 runTurn 里标记 active"，
+  //    两个并发同会话请求都能通过预检，第二个随后在 openAgent 撞上 DSH 的
+  //    "already owned by an active write handle" 而落 500（且白插一条任务）。
+  //    改为原子占位后，并发同会话稳定返回 409 SESSION_BUSY 且不入库。
   const input = validateSubmitInput(caller, 'stream', body)
   const sid = internalSessionId(input.clientId, input.sessionId, 'stream')
-  const busy = busyPrecheck(runtime, sid)
-  if (busy !== undefined) {
+  if (!runtime.hub.reserve(sid)) {
+    const busy = `session "${sid}" already has a running task`
     runtime.fileLogger.warn('stream', `session busy: ${busy}`, { sessionId: sid })
     sendError(res, new SessionBusyError(busy))
     return
   }
+  try {
+    await runStreamTask(runtime, input, sid, res)
+  } finally {
+    runtime.hub.release(sid)
+  }
+}
+
+/** 占位成功后的执行主体（§3.1 步骤 2–7）。调用方负责 reserve/release。 */
+async function runStreamTask(
+  runtime: BridgeRuntime,
+  input: ValidatedSubmit,
+  sid: string,
+  res: ServerResponse,
+): Promise<void> {
+  const { db } = runtime
   // 2. 入库 received + 日志
   const now = nowIso()
   const taskId = randomUUID()
@@ -150,47 +160,53 @@ export async function handleStreamSubmit(
 
   sseData(res, { event: 'start', task_id: taskId })
   keepalive = setInterval(() => ssePing(res), SSE_KEEPALIVE_MS)
+  keepalive.unref?.() // 不让 keepalive 独自撑住事件循环（复审 F4）
 
-  // 6. 驱动 turn：session/event → SSE chunk 实时转发；每 assistant/message 落一条日志
-  const outcome = await runtime.hub.runTurn({
-    sessionId: sid,
-    taskId,
-    prompt: input.prompt,
-    agent,
-    messageFactory: runtime.messageFactory,
-    onTextDelta: (text: string) => {
-      sseData(res, { event: 'chunk', content: text })
-    },
-    onReasoningDelta: (text: string) => {
-      sseData(res, { event: 'reasoning', content: text })
-    },
-    onAssistantMessage: (turn: number, text: string, usage: Record<string, unknown> | null) => {
-      db.addLog(taskId, 'chunk', text, { turn, usage: usage ?? undefined })
-    },
-  })
-  settled = true
+  try {
+    // 6. 驱动 turn：session/event → SSE chunk 实时转发；每 assistant/message 落一条日志
+    const outcome = await runtime.hub.runTurn({
+      sessionId: sid,
+      taskId,
+      prompt: input.prompt,
+      agent,
+      messageFactory: runtime.messageFactory,
+      onTextDelta: (text: string) => {
+        sseData(res, { event: 'chunk', content: text })
+      },
+      onReasoningDelta: (text: string) => {
+        sseData(res, { event: 'reasoning', content: text })
+      },
+      onAssistantMessage: (turn: number, text: string, usage: Record<string, unknown> | null) => {
+        db.addLog(taskId, 'chunk', text, { turn, usage: usage ?? undefined })
+      },
+    })
+    settled = true
 
-  // 7. 按结局落库（终态由 SQL WHERE status 守卫，不覆盖并发取消）+ SSE 终帧
-  const endTime = nowIso()
-  if (outcome.kind === 'completed') {
-    db.completeTask(taskId, { result: outcome.result, usage: outcome.usage, isCallback: false, now: endTime })
-    db.addLog(taskId, 'completed', '任务完成', { usage: outcome.usage ?? undefined }, endTime)
-    runtime.fileLogger.info('stream', `task ${taskId} completed`, { usage: outcome.usage ?? undefined })
-    if (!clientGone) sseData(res, { event: 'done', task_id: taskId, usage: outcome.usage ?? null })
-  } else if (outcome.kind === 'failed') {
-    db.failTask(taskId, outcome.message, endTime)
-    db.addLog(taskId, 'failed', outcome.message, { reason: outcome.reason }, endTime)
-    runtime.fileLogger.error('stream', `task ${taskId} failed: ${outcome.message}`)
-    if (!clientGone) {
-      sseData(res, { event: 'error', task_id: taskId, reason: outcome.reason ?? { kind: 'error', message: outcome.message } })
+    // 7. 按结局落库（终态由 SQL WHERE status 守卫，不覆盖并发取消）+ SSE 终帧
+    const endTime = nowIso()
+    if (outcome.kind === 'completed') {
+      db.completeTask(taskId, { result: outcome.result, usage: outcome.usage, isCallback: false, now: endTime })
+      db.addLog(taskId, 'completed', '任务完成', { usage: outcome.usage ?? undefined }, endTime)
+      runtime.fileLogger.info('stream', `task ${taskId} completed`, { usage: outcome.usage ?? undefined })
+      if (!clientGone) sseData(res, { event: 'done', task_id: taskId, usage: outcome.usage ?? null })
+    } else if (outcome.kind === 'failed') {
+      db.failTask(taskId, outcome.message, endTime)
+      db.addLog(taskId, 'failed', outcome.message, { reason: outcome.reason }, endTime)
+      runtime.fileLogger.error('stream', `task ${taskId} failed: ${outcome.message}`)
+      if (!clientGone) {
+        sseData(res, { event: 'error', task_id: taskId, reason: outcome.reason ?? { kind: 'error', message: outcome.message } })
+      }
+    } else {
+      db.cancelTask(taskId, outcome.message, endTime, ['processing'])
+      db.addLog(taskId, 'cancelled', outcome.message, {}, endTime)
+      runtime.fileLogger.info('stream', `task ${taskId} cancelled: ${outcome.message}`)
+      if (!clientGone) {
+        sseData(res, { event: 'error', task_id: taskId, reason: { kind: 'aborted', message: outcome.message } })
+      }
     }
-  } else {
-    db.cancelTask(taskId, outcome.message, endTime, ['processing'])
-    db.addLog(taskId, 'cancelled', outcome.message, {}, endTime)
-    runtime.fileLogger.info('stream', `task ${taskId} cancelled: ${outcome.message}`)
-    if (!clientGone) {
-      sseData(res, { event: 'error', task_id: taskId, reason: { kind: 'aborted', message: outcome.message } })
-    }
+  } finally {
+    // 正常收尾与落库抛错都要停表并结束 SSE；否则 keepalive 会泄漏、
+    // 连接既不收尾也不报错（复审 F3/F4 同源）。
+    stop()
   }
-  stop()
 }

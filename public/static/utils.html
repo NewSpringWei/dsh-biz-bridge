@@ -24,7 +24,6 @@
     <a href="#sec-keygen" class="active">密钥对生成</a>
     <a href="#sec-time">时间转换</a>
     <a href="#sec-api">API 说明</a>
-    <a href="#sec-placeholder">预留位</a>
   </aside>
 
   <!-- 内容区 -->
@@ -87,16 +86,11 @@
           <tr><td><code>POST /tasks/{id}/priority</code></td><td>业务级(own) / admin</td><td>调整优先级（数字越小越优先，仅 queued）。</td></tr>
           <tr><td><code>POST /stats</code></td><td>业务级 / admin</td><td>运行统计：stream/callback 成功失败、队列、回调送达失败与平均重试；业务级限定自身。</td></tr>
           <tr><td><code>POST /sessions/{id}/messages</code></td><td>admin</td><td>会话消息查询（读 DSH session 事件流；需注入 sessionQuery 服务，否则 501）。</td></tr>
-          <tr><td><code>POST /callback-test/receive</code></td><td>免签名</td><td>测试接收器（内存 30 分钟 TTL）：回调任务把 callback_url 指向它即可在页面追踪回调到达。</td></tr>
-          <tr><td><code>POST /callback-test/{id}</code></td><td>需签名</td><td>查询回调是否已到达测试接收器。</td></tr>
+          <tr><td><code>POST /callback-test/receive</code></td><td>仅插件调度器（内部令牌）</td><td><b>调试设施</b>：内存 30 分钟 TTL。回调用任务的 callback_url 指向它即可在页面追踪回调到达。仅接受本插件调度器的投递，外部写入一律 403。</td></tr>
+          <tr><td><code>POST /callback-test/{id}</code></td><td>admin / 该任务所属 client</td><td>查询回调是否已到达测试接收器；<b>禁止跨 client 查询</b>。</td></tr>
         </tbody>
       </table>
       <p class="msg" style="margin-top:8px">静态页与更完整的协议细节见 <code>code/docs/api.md</code> 与设计文档 <code>docs/dsh-biz-bridge-design.md</code> §6。</p>
-    </section>
-
-    <section class="panel" id="sec-placeholder">
-      <h2>预留小工具位</h2>
-      <div class="placeholder">后续的免鉴权小工具可加在这里（与密钥工具一样只放在本页、不需要验签）。</div>
     </section>
   </div>
 </div>

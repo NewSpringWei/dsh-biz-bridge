@@ -69,13 +69,16 @@
       <h2>会话消息查询 <span id="msgSession" class="msg"></span></h2>
       <div class="row">
         <div class="field"><label>Session ID</label>
-          <input id="fSessionId" placeholder="如 biz-system-a:sess-1" style="width:300px"></div>
+          <input id="fSessionId" placeholder="如 biz-system-a:stream:sess-1" style="width:300px"></div>
         <div class="field"><label>页码</label>
           <input id="fSessionPage" type="number" value="1" min="1" style="width:60px"></div>
         <div class="field"><label>每页</label>
           <input id="fSessionSize" type="number" value="50" min="1" max="100" style="width:60px"></div>
         <button id="btnSession" class="primary">查询会话</button>
       </div>
+      <p class="msg" style="margin-top:6px">内部会话 ID = <code>&lt;clientId&gt;:&lt;type&gt;:&lt;session_id&gt;</code>
+        （type 取 <code>stream</code> 或 <code>cb</code>）。最省事的方式是点任务行里的
+        <b>会话消息</b> 按钮，会自动按该任务填好。</p>
       <pre class="view" id="sessionView">输入 Session ID 后点"查询会话"查看对话内容。</pre>
     </section>
   </div>
@@ -148,9 +151,15 @@
   function canCancel(status) {
     return status === 'queued' || status === 'received' || status === 'processing'
   }
+  /** 构造内部会话 id（列表项已带 client_id / type / session_id，用户不必手拼、也不必知道口径）。 */
+  function internalSessionId(t) {
+    return t.client_id + ':' + (t.type === 'stream' ? 'stream' : 'cb') + ':' + t.session_id
+  }
+
   function taskActions(t) {
     var h = '<button class="small" data-act="detail" data-id="' + esc(t.task_id) + '">详情</button> ' +
-      '<button class="small" data-act="logs" data-id="' + esc(t.task_id) + '">日志</button>'
+      '<button class="small" data-act="logs" data-id="' + esc(t.task_id) + '">日志</button> ' +
+      '<button class="small" data-act="sessions" data-sid="' + esc(internalSessionId(t)) + '">会话消息</button>'
     if (canCancel(t.status)) {
       h += ' <button class="small danger" data-act="cancel" data-id="' + esc(t.task_id) + '">取消</button>'
     }
@@ -190,6 +199,11 @@
     var taskId = button.getAttribute('data-id')
     var act = button.getAttribute('data-act')
     if (act === 'detail' || act === 'logs') { await viewTask(taskId, act); return }
+    if (act === 'sessions') {
+      $('fSessionId').value = button.getAttribute('data-sid') || ''
+      await querySessionMessages()
+      return
+    }
     if (act === 'cancel') {
       if (!window.confirm('确定取消任务 ' + taskId + ' ？（未开始/进行中的任务会被取消，处理中任务将中止 agent）')) return
     } else if (act === 'replay') {
@@ -227,7 +241,9 @@
   })
 
   /* ---- 会话消息查询 ---- */
-  $('btnSession').onclick = async function () {
+  $('btnSession').onclick = function () { querySessionMessages() }
+
+  async function querySessionMessages() {
     var sid = $('fSessionId').value.trim()
     if (!sid) { B.showMsg($('msgSession'), '请输入 Session ID', 'err'); return }
     B.showMsg($('msgSession'), '请求中…', '')

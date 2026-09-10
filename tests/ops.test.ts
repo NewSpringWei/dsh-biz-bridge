@@ -11,7 +11,7 @@ import {
   ForbiddenError, InvalidRequestError, NotFoundError,
 } from '../src/shared/errors.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, statsOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, sessionMessagesOp, statsOp,
 } from '../src/core/ops.ts'
 import { validateSubmitInput } from '../src/core/submission.ts'
 import type { Caller } from '../src/core/auth.ts'
@@ -273,4 +273,59 @@ test('list/detail/logs/stats ownership isolation', () => {
   assert.equal(bizStats.tasks.callback.total, 0) // BIZ 的任务都是 queued（无终态）
   const adminStats = statsOp(db, ADMIN) as { queue: { queued: number } }
   assert.equal(adminStats.queue.queued, 2)
+})
+
+test('sessionMessagesOp: 投影 user/assistant 消息（user/message 的 data 是消息本身）', async () => {
+  // 真机回归（2026-09-10）：DSH 0.1.5 的 `user/message` 事件 data **就是 UserMessage**，
+  // 不是 `{ message }` 包装。此前按 data.message 取值 → user 消息被静默丢弃。
+  const events = [
+    { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: '你好' }] } },
+    { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'text', text: '你好，' }] }, usage: { totalTokens: 3 } } },
+    // 兼容旧的 `{ message }` 包装形状
+    { type: 'user/message', seq: 3, data: { message: { content: [{ type: 'text', text: '第二问' }] } } },
+    // 非文本块不投影
+    { type: 'user/message', seq: 4, data: { content: [{ type: 'image', url: 'x' }] } },
+  ]
+  const sessionQuery = {
+    readSession: async (id: string) => ({ session: { id, createdAt: 0 }, events }),
+  }
+  const r = await sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, { page: 1, page_size: 10 })
+  assert.equal(r.total, 3)
+  assert.deepEqual(r.messages.map(m => m.role), ['user', 'assistant', 'user'])
+  assert.equal(r.messages[0]?.content, '你好')
+  assert.deepEqual(r.messages[1]?.usage, { totalTokens: 3 })
+  // 分页
+  const paged = await sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, { page: 2, page_size: 2 })
+  assert.equal(paged.messages.length, 1)
+})
+
+test('sessionMessagesOp: 仅 admin 可查询', async () => {
+  const sessionQuery = {
+    readSession: async (id: string) => ({ session: { id, createdAt: 0 }, events: [] }),
+  }
+  await assert.rejects(() => sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', BIZ, {}), ForbiddenError)
+})
+
+test('sessionMessagesOp: 会话不存在 → NotFoundError（404），不是 500', async () => {
+  // DSH sessionQuery（SessionQueryError）以稳定 code 表达失败；
+  // 这里按 code 判定，而不是匹配错误文案。
+  const notFound = Object.assign(new Error('session "biz-a:stream:s1" not found'), {
+    code: 'SESSION_QUERY_SESSION_NOT_FOUND',
+  })
+  const sessionQuery = { readSession: async () => { throw notFound } }
+  await assert.rejects(
+    () => sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, {}),
+    NotFoundError,
+  )
+})
+
+test('sessionMessagesOp: 其他读取失败如实上抛（不掩盖服务端故障）', async () => {
+  const corrupt = Object.assign(new Error('stored session is corrupt'), {
+    code: 'SESSION_QUERY_CORRUPT_SESSION',
+  })
+  const sessionQuery = { readSession: async () => { throw corrupt } }
+  await assert.rejects(
+    () => sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, {}),
+    (error: unknown) => error === corrupt,
+  )
 })

@@ -490,6 +490,104 @@
 
 ---
 
+## 12. POST /api/v1/sessions/{id}/messages —— 会话消息查询
+
+读取 DSH 持久化的会话事件流，投影出该会话的 user / assistant 消息时间线，供管理端排查
+"某次任务到底带了多少上下文"。
+
+**所需 scope**：`admin`（业务级调用返回 403 `FORBIDDEN`）
+
+路径参数：`id` 为**内部会话 ID**，形如 `<clientId>:<type>:<外部 session_id>`（`type` ∈
+`stream` | `cb`），例如 `biz-system-a:stream:sess-1`。允许字符 `A-Za-z0-9:._-`，长度 1-128。
+
+> ⚠️ **注意**：
+> 1. 路径参数含冒号，**字面量书写与 `%3A` 百分号编码都会被接受**（服务端解码后按上面的字符集
+>    重新校验）。字面量更直观，编码形式同样可用。
+> 2. **任务详情 / 列表接口返回的 `session_id` 是“外部”形式（不含 `clientId:` 与 `type:` 前缀）**，
+>    不能直接用作本接口的 `id`。调用方需要自行按
+>    `<clientId>:<type>:<session_id>` 拼接，其中 `type` 取该任务的类型
+>    （`stream` → `stream`，`callback` → `cb`）。
+
+### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `page` | number | 否 | 页码（从 1 开始，默认 1） |
+| `page_size` | number | 否 | 每页条数（默认 20） |
+
+### 响应体（200）
+
+```json
+{
+  "session_id": "biz-system-a:stream:sess-1",
+  "total": 2,
+  "page": 1,
+  "page_size": 20,
+  "messages": [
+    { "role": "user", "content": "分析一下", "seq": 1, "timestamp": null },
+    { "role": "assistant", "content": "好的……", "usage": { "totalTokens": 1024 }, "seq": 2, "timestamp": null }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `messages[].role` | string | `user` \| `assistant` |
+| `messages[].content` | string | 纯文本内容（仅取 `text` 块；tool 调用等其它块不投影） |
+| `messages[].usage` | object \| null | 仅 assistant 消息有值，取自事件 `usage` |
+| `messages[].seq` | number \| null | 会话事件序号 |
+| `messages[].timestamp` | number \| null | 事件时间（毫秒）；当前恒为 `null` |
+
+### 约束与错误情况
+
+| 条件 | 结果 |
+|------|------|
+| 非 `admin` scope | 403 `FORBIDDEN` |
+| **会话不存在** | **404 `NOT_FOUND`**（`session "<id>" not found`） |
+| `id` 非法（超出 `A-Za-z0-9:._-` 字符集或超长） | 404 `NOT_FOUND`（route not found） |
+| 宿主未注入 `sessionQuery` | 501 `NOT_IMPLEMENTED` |
+| 会话存储损坏等**服务端**故障 | 500 `INTERNAL` |
+
+> 「会话不存在」是调用方输入问题，返回 **404** 而非 500 —— 5xx 只用于真正的服务端故障，
+> 以免污染告警并要求客户端做无意义的重试。
+
+---
+
+## 13. 回调测试接收器（调试端点）
+
+> 这两个端点服务于第一方页面的「回调追踪」，**不是业务接口**：数据只存在内存中（30 分钟 TTL），
+> 进程重启即清空。业务系统不需要、也不应依赖它们。
+
+### 13.1 POST /api/v1/callback-test/receive —— 投递接收
+
+调度器把回调 POST 到此处（提交任务时把 `callback_url` 指向本路径，即可在页面观察回调到达）。
+
+**所需权限**：**仅本插件的调度器**。该端点不接受外部写入——调度器会携带一个每次插件激活
+随机生成的内部令牌头 `X-Bridge-Internal-Token`，令牌只在进程内共享、从不发放给客户端。
+
+| 条件 | 结果 |
+|------|------|
+| 令牌缺失 / 不匹配 | 403 `FORBIDDEN` |
+| 令牌正确 | 200 `{ "ok": true, "task_id": "...", "received_at": "..." }` |
+
+> **为什么不是"免签名"**：该端点写入的内容会被页面当作**真实回调到达**展示。若允许任意写入，
+> 任何能连到端口的人都能伪造投递记录。宿主监听 `0.0.0.0` 时尤其重要。
+
+### 13.2 POST /api/v1/callback-test/{id} —— 到达查询
+
+**所需 scope**：`admin`，或**该任务所属 client**（即 `task.client_id === caller.clientId`）。
+
+| 条件 | 结果 |
+|------|------|
+| 非 admin 且非任务所属 client | 403 `FORBIDDEN` |
+| 任务不存在 | 404 `NOT_FOUND` |
+| 已到达 | 200 `{ "task_id": "...", "received": true, "biz_id": "...", "status": "...", "result": ..., "received_at": "...", "raw_body": { ... } }` |
+| 尚未到达 | 200 `{ "task_id": "...", "received": false }` |
+
+路径参数 `id` 为任务 UUID（1-128 位 `A-Za-z0-9_-`）。
+
+---
+
 ## 错误码全集
 
 所有错误响应结构：`{ "error": { "code": string, "message": string, "details": object } }`
@@ -502,10 +600,13 @@
 | `NOT_FOUND` | 404 | 任务不存在 / 路由不存在 |
 | `DUPLICATE_BIZ_ID` | 409 | 幂等键冲突（同一 client_id + biz_id + replay_seq 已存在） |
 | `SESSION_BUSY` | 409 | 同一 session 已有进行中任务 |
-| `SESSION_ACTIVATING` | 409 | 同一 session 正在激活中（瞬态，可重试） |
-| `TASK_RUNNING` | 409 | 任务已开始执行，业务级无法取消 |
+| `TASK_RUNNING` | 409 | 并发状态竞争导致本次操作未生效（可重试）：重播续号重试耗尽 / 取消被调度抢占 / redeliver 期间状态被并发修改 |
 | `PAYLOAD_TOO_LARGE` | 413 | 请求体超限 |
 | `INTERNAL` | 500 | 服务端内部错误 |
+| `NOT_IMPLEMENTED` | 501 | 宿主未提供所需服务（当前仅 `sessionQuery` 缺失时的会话消息查询） |
+
+> `SESSION_ACTIVATING` 仍保留在错误码类型联合中，但当前实现**不再触发**——旧的
+> `activating` 并发去重已随"agent 生命周期交 DSH"一并移除，调用方无需专门处理。
 
 `DUPLICATE_BIZ_ID` 的 `details` 携带原任务信息：
 ```json

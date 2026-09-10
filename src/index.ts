@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { mkdirSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { NonceCache, SignatureVerifier } from './core/auth.ts'
 import { loadStaticFiles } from './http/admin-page.ts'
 import {
@@ -143,6 +144,8 @@ export function apply(ctx: Context, rawConfig: Config): void {
     sessionQuery: ctx.get('sessionQuery'),
     fileLogger,
     staticFiles: loadStaticFiles((message) => logger.info(message)),
+    // 回调测试接收器的内部令牌：仅本进程调度器持有，用于拒绝任何外部写入（F2）。
+    callbackTestToken: randomBytes(32).toString('hex'),
   }
   const scheduler = new CallbackScheduler(runtime)
 

@@ -32,7 +32,23 @@
 #     persona: >-
 #       你是业务系统的执行代理；上下文以业务方提供的会话为准。
 
-# 3) 插件配置
+# 3) LLM 默认模型 —— **独立部署（无 dsh web）必须配**
+#    不配的现象：服务能启动、HTTP 接口全部正常返回，但每个 agent 轮次都失败，
+#    报 has no provider/model。这是最容易误判为“插件坏了”的故障。
+#    本节覆盖 dsh-base 自带的 agent-default-model 行。
+#    若宿主已通过其它方式配好默认模型（例如用过 dsh web 的设置界面），可删掉本节。
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+
+#    ⚠️ API Key **不在这里**。llm-deepseek 的配置项只有 apiKeyEnv（**环境变量名**，
+#       默认 DEEPSEEK_API_KEY），没有 apiKey 字段——secret 刻意不进配置文件。
+#       真正的 key 放 <DSH_HOME>/.credentials.yaml（可直接编辑，改后无需重启即生效）
+#       或启动环境变量。解析优先级：环境变量 > .credentials.yaml > 项目 .env。
+#       详见 config.md §4.2。
+
+# 4) 插件配置
 - id: dsh-biz-bridge
   config:
     runtime:

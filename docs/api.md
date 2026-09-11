@@ -92,10 +92,14 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `provider` | string | LLM 提供商 |
-| `model` | string | 模型名称（如 `"deepseek-chat"`、`"deepseek-reasoner"`） |
-| `reasoningEffort` | string | 推理力度 |
+| `provider` | string | LLM 提供商路由键（如 `"deepseek-official"`） |
+| `model` | string | 模型 ID（如 `"deepseek-flash"`、`"deepseek-v4-flash"`） |
+| `reasoningEffort` | string | 推理力度（如 `"high"`） |
 | `maxTokens` | number | 最大输出 token 数（正整数） |
+
+`params` 整体可省略，字段亦可单个省略；**省略 `provider` / `model` 时由宿主的默认模型承接**
+（具体默认值取决于宿主 profile 配置，随 DSH 版本可能变化）。可用值请在提交前调用
+§11「可用模型查询」获取；调用方也可传入未列出的 model ID，由 DSH adapter 自行处理。
 
 其余 `params` 字段（如 `tools`）原样入库供能力增强插件读取，本插件不消费。
 
@@ -196,7 +200,7 @@
       "session_id": "sess-1",
       "type": "stream",
       "status": "completed",
-      "usage": { "totalTokens": 1024, "promptTokens": 512, "completionTokens": 512 },
+      "usage": { "inputTokens": 512, "outputTokens": 512, "totalTokens": 1024, "cacheReadTokens": 0, "reasoningTokens": 0 },
       "priority": 0,
       "created_at": "2025-01-01T00:00:00.000Z",
       "updated_at": "2025-01-01T00:00:05.000Z"
@@ -234,7 +238,7 @@
   "params": { "model": "deepseek-chat" },
   "callback_url": null,
   "result": "agent 完整输出文本",
-  "usage": { "totalTokens": 1024, "promptTokens": 512, "completionTokens": 512 },
+  "usage": { "inputTokens": 512, "outputTokens": 512, "totalTokens": 1024, "cacheReadTokens": 0, "reasoningTokens": 0 },
   "error_message": null,
   "retry_count": 0,
   "priority": 0,
@@ -251,6 +255,11 @@
 | `error_message` | string \| null | 失败原因（仅 failed/callback_failed 有值） |
 | `params` | object \| null | 提交时的 params（解析后的 JSON） |
 | `callback_url` | string \| null | 回调地址（仅 callback 类型） |
+
+> **`usage` 字段结构**（DSH `TokenUsage`）：`inputTokens`、`outputTokens` 为必有；
+> `totalTokens`（整次调用总量）、`cacheReadTokens`、`cacheWriteTokens`、`reasoningTokens`
+> 为可选——provider 未提供时该字段省略。stream 的 `done` 帧、任务详情、任务列表
+> 三处 usage **同源一致**。
 
 ---
 

@@ -235,7 +235,7 @@
   "type": "stream",
   "status": "completed",
   "prompt": "你好",
-  "params": { "model": "deepseek-chat" },
+  "params": { "model": "deepseek-flash" },
   "callback_url": null,
   "result": "agent 完整输出文本",
   "usage": { "inputTokens": 512, "outputTokens": 512, "totalTokens": 1024, "cacheReadTokens": 0, "reasoningTokens": 0 },
@@ -431,7 +431,7 @@
 
 ```json
 {
-  "system": { "status": "ok", "version": "0.1.0", "uptime": 3600 },
+  "system": { "status": "ok", "version": "0.1.1", "uptime": 3600 },
   "tasks": {
     "stream": { "total": 100, "success": 95, "failed": 5, "success_rate": 0.95 },
     "callback": { "total": 200, "success": 190, "failed": 10, "success_rate": 0.95 }
@@ -460,26 +460,29 @@
 {
   "providers": [
     {
-      "id": "deepseek",
+      "id": "deepseek-official",
       "name": "DeepSeek",
       "models": [
         {
-          "id": "deepseek-chat",
-          "name": "DeepSeek Chat",
-          "description": "通用对话模型",
-          "inputModalities": ["text"]
+          "id": "deepseek-flash",
+          "name": "DeepSeek-V41-Flash",
+          "description": null,
+          "inputModalities": ["text", "image"]
         },
         {
-          "id": "deepseek-reasoner",
-          "name": "DeepSeek Reasoner",
-          "description": "推理模型",
-          "inputModalities": ["text"]
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek-V4-Flash",
+          "description": "Fast, efficient, and economical; suited to focused, routine, or parallel tasks.",
+          "inputModalities": null
         }
       ]
     }
   ]
 }
 ```
+
+> 上例是 `llm-deepseek` 默认路由目录的**节选**；实际返回含宿主注册的全部 provider，
+> 模型目录随 DSH 版本变化，请以调用结果为准。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -614,8 +617,7 @@
 | `INTERNAL` | 500 | 服务端内部错误 |
 | `NOT_IMPLEMENTED` | 501 | 宿主未提供所需服务（当前仅 `sessionQuery` 缺失时的会话消息查询） |
 
-> `SESSION_ACTIVATING` 仍保留在错误码类型联合中，但当前实现**不再触发**——旧的
-> `activating` 并发去重已随"agent 生命周期交 DSH"一并移除，调用方无需专门处理。
+> `SESSION_ACTIVATING` 保留在错误码类型联合中，但当前实现不会触发，调用方无需专门处理。
 
 `DUPLICATE_BIZ_ID` 的 `details` 携带原任务信息：
 ```json

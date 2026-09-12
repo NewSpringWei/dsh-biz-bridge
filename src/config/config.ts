@@ -87,6 +87,8 @@ export interface RuntimeLayout {
   dataDir: string
   logsDir: string
   workspaceDir: string
+  /** client 公钥表目录：clients.json + <clientId>.pem，运行期热重载（见 core/clients-store.ts）。 */
+  clientsDir: string
   /** SQLite 文件（位于 dataDir 下）。 */
   dbFile: string
 }
@@ -100,7 +102,10 @@ export function resolveRuntimeLayout(path: string): RuntimeLayout {
   const dataDir = join(root, 'data')
   const logsDir = join(root, 'logs')
   const workspaceDir = join(root, 'workspace')
-  return { root, dataDir, logsDir, workspaceDir, dbFile: join(dataDir, 'dsh-biz-bridge.db') }
+  const clientsDir = join(root, 'clients')
+  return {
+    root, dataDir, logsDir, workspaceDir, clientsDir, dbFile: join(dataDir, 'dsh-biz-bridge.db'),
+  }
 }
 
 /** 某业务 client 的会话工作目录（= 其所有 agent 会话的 cwd，业务隔离边界）。 */

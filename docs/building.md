@@ -5,7 +5,7 @@
 
 ## 1. 环境
 
-- Node ≥ 22（`node:sqlite` 内置）。
+- Node `^22.19.0 || >=24.0.0`（**DSH 的引擎要求**；单测依赖 Node 内置的 `node:sqlite`）。
 - 构建只依赖 devDependency `tsdown`：仓库根目录可直接 `pnpm install`（需能访问
   npm registry）。
 - 运行期 `@deepseek-ai/*` 是插件运行时的宿主能力（由承载它的 DSH 提供），清单里
@@ -56,14 +56,30 @@ npm test
 
 - 零依赖：只使用 Node 内置模块（`node:test`、`node:crypto`、`node:sqlite`）。
 - `--test-isolation=none` 让用例在当前进程跑（受限环境无法 spawn 子进程）。
-- 用例矩阵与“如何增改测试”是私有资料，不在公开仓库；公开侧只保证：核心逻辑改动
-  请同步跑通 `tests/` 下 54 个用例（auth / db / ops / session-bridge / runner / config）。
+- 核心逻辑改动请同步跑通 `tests/` 下全部用例（六组：auth / db / ops / session-bridge /
+  runner / config）。`npm test` 会一次跑完，以其输出为准。
 
-## 5. 常见问题
+## 5. 生成便携部署包（自带运行时）
+
+目标机器**不能**预装 Node / DSH 时，用 [`../tools/bundle/`](../tools/bundle/README.md)
+把「固定版本 Node + DSH + pnpm + 本插件」组装成一个可带走的目录：
+
+```bash
+pnpm install && pnpm build && npm run release   # 出插件 tgz
+node tools/bundle/bundle.mjs                    # 读 tools/bundle/bundle.config.json 组装
+node tools/bundle/bundle.mjs --check dist/<包名>  # 交付前自检
+```
+
+- 配置项（钉死的 DSH / pnpm / Node 版本、目标平台、镜像、输出目录）见该目录 README。
+- **产物不入库**：输出到 `dist/`，中间物在 `.work/`，两者均已在 `.gitignore` 内。
+- `--skip-fetch` 可只验证组装逻辑不联网；`--node-source <目录>` 可离线用本地 Node。
+- `--check` 会拦截"被原地跑过"的目录（`runtime/` 里长出 `profiles/` `data/` 等即不再是干净交付物）。
+
+## 6. 常见问题
 
 | 现象 | 处理 |
 |------|------|
 | `pnpm install` 联网失败 | 构建需要从 npm registry 拉取 tsdown；离线环境请直接用 `release/*.tgz`，不必本地构建 |
-| `pnpm build` 后检查产物缺 `@deepseek-ai/...` import 报错 | 属预期：运行时由宿主 DSH 解析，勿把 peer 打进产物 |
-| 插件行加载后没有 `/bizbridge` 路由 | 该 profile 组合缺 `webServer` 服务（base 不含）：见 `examples/dsh-profile/cordis.patch.yml` 的 webserver 行 |
+| 产物里出现 `@deepseek-ai/...` 的 import | 不要把这些 peer 打进产物——运行时由宿主 DSH 解析 |
+| 插件行加载后没有 `/bizbridge` 路由 | 该 profile 组合缺 `webServer` 服务（base 不含）：见 [`cordis.patch.yml`](cordis.patch.yml) 的 webserver 行 |
 | 启动报缺 `agents/sessions/sessionPersistence` | profile 缺 `@deepseek-ai/dsh-base`：`dsh plugin --profile <p> add` 引导初始化会自动带上 base |

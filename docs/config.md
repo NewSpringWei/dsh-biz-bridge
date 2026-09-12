@@ -2,7 +2,7 @@
 
 > 本文件是插件配置的**完整参考**：部署步骤、配置项字段说明、配置样例。
 > 源码层 schema 见 `src/index.ts`（`Config`），缺省值的单一起源在
-> `src/config/config.ts`（`DEFAULTS`）——两处同步互指。
+> `src/config/config.ts`（`DEFAULTS`）。
 
 ---
 
@@ -19,14 +19,14 @@
 #    优先级：显式配置 > $DSH_HOME > ~/.dsh（空白值视为未设）。
 
 # ① 建 profile（自动带 @deepseek-ai/dsh-base）+ 安装插件（只做一次）
-dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.0.tgz
+dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.1.tgz
 #    ⚠️ 路径写法：带 ./ 前缀并用**正斜杠**，或直接给绝对路径。
 #       相对路径由 pnpm 在 profile 目录下解析，写成 program\packages\x.tgz
 #       之类会被锚到 profile 内并报 ENOENT。
 
 # ② 部署配置：把 cordis.patch.yml 内容覆盖到
 #    $DSH_HOME/profiles/bizbridge/cordis.patch.yml
-#    并完成替换：公钥两段、端口（按需）、**LLM 段（独立部署必需，见 §4）**
+#    并完成替换：端口（按需）、**LLM 段（独立部署必需，见 §4）**
 
 # ③ 启动（独立进程；与 web/GUI 互不影响）
 dsh --profile bizbridge
@@ -35,16 +35,19 @@ dsh --profile bizbridge
 启动日志出现 `activation rescue` 与 `activated` 即成功。
 
 > **首次部署不必一次配齐：可以两段式启动。**
-> `auth.clients` 允许为空（默认 `[]`）。此时所有 API 请求返回 401、**只有静态页可达**
-> （fail-closed），因此空跑起来是安全的：
+> client 表允许为空。此时所有 API 请求返回 401、**只有静态页可达**（fail-closed），
+> 因此空跑起来是安全的：
 >
 > ```
-> ① 启动（clients 留空）
+> ① 启动
 > ② 打开 http://127.0.0.1:42731/bizbridge/static/utils.html   # 静态页无需认证
-> ③ 用工具页生成密钥对 → 公钥填进 cordis.patch.yml
-> ④ 重启
+> ③ 用工具页生成密钥对 → 公钥存成 <runtime>/clients/<clientId>.pem，
+>    并在 <runtime>/clients/clients.json 里登记该 client 的 scope
+> ④ 不用重启：插件每 2s 重读该目录，改完即生效
 > ```
 >
+> `<runtime>` 即插件配置的 `runtime.path`（便携包中为 `<包根>/runtime`）。
+> `clients.json` 是 `[{ clientId, scope, enabled }]`；`enabled: false` 即吊销该 client。
 > 工具页是**纯本地运算**（不发任何网络请求），密钥不离开浏览器。
 
 配置样例见同目录 [`cordis.patch.yml`](cordis.patch.yml)；
@@ -79,7 +82,6 @@ dsh --profile bizbridge
 > ├─ logs/                        # 按天轮转 dsh_biz_bridge_{yyyymmdd}.log
 > └─ workspace/<clientId>/        # 该 client 全部 agent 会话的 cwd（业务隔离 + DSH workspace-write 范围）
 > ```
-> 本次破坏性改版（草创期清理，无历史包袱）：旧 `database.path` 与 `logging.path` 键已移除。
 
 ### database
 
@@ -94,24 +96,38 @@ dsh --profile bizbridge
 |----|------|------|
 | `timestampWindow` | `300` | 签名时间戳容差（秒） |
 | `nonceCacheSize` | `10000` | nonce 防重放内存缓存容量 |
-| `clients[]` | `[]` | 白名单；每项 `{ clientId, publicKey, scope }` |
+| `clients[]` | `[]` | **已迁移**：client 公钥表的权威位置是 `<runtime>/clients/`（见下）。本键只在那个目录尚未建立时作为**一次性迁移来源**，之后不再参与运行 |
 
-`clients[]` 各字段：
+#### client 公钥表：`<runtime>/clients/`
 
-| 键 | 类型 | 说明 |
-|----|------|------|
-| `clientId` | string | 调用方标识（业务系统/管理端各自注册） |
-| `publicKey` | string | RSA 公钥（SPKI PEM）。用工具页 `utils.html` 生成密钥对，公钥粘到这里 |
-| `scope` | string[] | `["stream"]` / `["callback"]` / `["admin"]`（可组合） |
+```
+<runtime>/clients/
+├─ clients.json          [{ "clientId": "...", "scope": [...], "enabled": true }]
+└─ <clientId>.pem        该 client 的公钥（SPKI PEM，整段原文）
+```
+
+**改动即时生效、不需要重启**（`cordis.patch.yml` 是冷配置，改它要重启；client 是业务配置，
+每接一个业务系统停一次服不合理，故移出）。
+
+| 字段 | 说明 |
+|------|------|
+| `clientId` | 调用方标识；限 `[A-Za-z0-9_-]{1,64}`（它会被拼进内部 session id 与 `workspace/<clientId>/` 目录名） |
+| `scope` | `["stream"]` / `["callback"]` / `["admin"]`（可组合，非空） |
+| `enabled` | 省略即 `true`；置 `false` 为**停用**（废止路径，不必删文件） |
+
+公钥怎么来：用工具页 `utils.html` 生成密钥对，把它给出的**公钥**存成
+`<runtime>/clients/<clientId>.pem`（整段原文，无需转义），并在 `clients.json` 里登记一行。
+
+> **几处刻意的行为**：
+> - `clients.json` 解析失败 → **保留上一份可用集合**并记警告，一个笔误不会把所有人锁在门外；
+> - 合法但为空 → 生效为空集（fail-closed：全部 API 401、只有静态页可达）；
+> - 某条 `clientId` 非法/重复、`scope` 未知、缺对应 `.pem` → 只跳过该条并记问题，不影响其余。
 
 scope 权限说明：
 - `stream`：调用流式接口
 - `callback`：调用回调接口 + 重播接口
 - `admin`：管理级，可查全部任务、取消任意任务、调用统计接口
 - 业务级 client 只能访问自己 `clientId` 的任务数据
-
-> **注意**：publicKey 必须整段粘贴（含 `-----BEGIN/END PUBLIC KEY-----` 首尾行、
-> 真实换行），用 YAML 块标量 `|-` 承接。不要写成一行带 `\n` 的字符串（会导致验签失败）。
 
 ### scheduler
 
@@ -129,13 +145,12 @@ scope 权限说明：
 |----|------|------|
 | `sseKeepalive` | `15` | 流式响应 keepalive 注释行间隔（秒） |
 
-### logging（运行日志，目录不再配置）
+### logging（运行日志）
 
 > 运行日志记录插件的 HTTP 请求、任务生命周期（创建/完成/失败/取消）、调度器事件等，
 > 用于排查定位问题。与 `task_logs` 表分离——task_logs 是业务级任务日志，运行日志是
-> 插件级运维日志。日志中涉及任务操作时会携带 `task_id`，方便交叉定位。目录固定为
-> `<runtime>/logs/`（由 runtime.path 派生，按天生成 `dsh_biz_bridge_{yyyymmdd}.log`），
-> 不再单独配置路径。
+> 插件级运维日志。日志中涉及任务操作时会携带 `task_id`，方便交叉定位。目录为
+> `<runtime>/logs/`（由 `runtime.path` 派生，按天生成 `dsh_biz_bridge_{yyyymmdd}.log`）。
 
 ---
 
@@ -157,7 +172,7 @@ scope 权限说明：
 
 ## 4. 独立部署要点（无 `dsh web`）
 
-本插件常以**独立 profile**布署（`dsh --profile bizbridge`），此时**没有 `dsh web` 的设置界面**。
+本插件常以**独立 profile**部署（`dsh --profile bizbridge`），此时**没有 `dsh web` 的设置界面**。
 下面几件事必须靠配置完成。
 
 ### 4.1 数据根与 `DSH_HOME`
@@ -166,8 +181,8 @@ DSH 自身数据（`profiles/`、`sessions/`、`storages/`、`settings.yaml`、`
 统一落在 `DSH_HOME`（默认 `~/.dsh`）；插件数据落在 `runtime.path`。
 
 **两者是两处**，若要“所有数据都在部署目录内”，必须显式设 `DSH_HOME`（见 §1 步骤 ⓪）。
-两者也可指向同一目录——子目录不冲突（DSH 用 `profiles/` `sessions/` `storages/`；
-插件用 `data/` `logs/` `workspace/`），好处是**备份只有一个目标**。
+两者也可指向同一目录：子目录不冲突（DSH 用 `profiles/` `sessions/` `storages/`；
+插件用 `data/` `logs/` `workspace/`），备份与迁移只需一个目标。
 
 ### 4.2 LLM 配置（**不配则每个 agent 轮次都失败**）
 
@@ -178,8 +193,8 @@ DSH 自身数据（`profiles/`、`sessions/`、`storages/`、`settings.yaml`、`
 | provider / model | `cordis.patch.yml` 覆盖 `agent-default-model` 行（样例已含，独立部署时启用） |
 | **API Key** | `<DSH_HOME>/.credentials.yaml`，或启动环境变量（优先级更高） |
 
-**API Key 为什么不写在配置文件里**：`llm-deepseek` 的配置项只有 `apiKeyEnv`
-（**环境变量名**，默认 `DEEPSEEK_API_KEY`），**没有 `apiKey` 字段** —— secret 刻意不进配置。
+`llm-deepseek` 的配置项只有 `apiKeyEnv`（**环境变量名**，默认 `DEEPSEEK_API_KEY`），
+**没有 `apiKey` 字段**，所以 key 只能落在上面两处。
 凭据解析优先级：`启动环境变量 > <DSH_HOME>/.credentials.yaml > 项目 .env > harness-home .env`。
 
 改动 `.credentials.yaml` **无需重启**，下一个请求即生效（便于轮换）。
@@ -210,7 +225,6 @@ location /bizbridge/ {
 ### 4.4 回调不通常见排查
 
 `callback` 模式下插件会**主动 POST 到业务方的 `callback_url`**（出站方向）。
-**网络与防火墙不归插件管**，但插件负责让失败可见：
 
-任务记为 `callback_failed`，按 `maxRetry` / `retryInterval` 重试，详情与 `tasks/{id}/logs`
-留有记录。排查顺序：先看这些状态，再查网络。
+失败会记为 `callback_failed`，按 `maxRetry` / `retryInterval` 重试，详情见 `tasks/{id}/logs`。
+排查顺序：先看这些状态，再查网络与防火墙。

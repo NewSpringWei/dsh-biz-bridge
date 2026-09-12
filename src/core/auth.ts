@@ -38,6 +38,20 @@ export class SignatureVerifier {
   }
 
   /**
+   * 用新的 client 集合替换现有集合（热重载，见 `core/clients-store.ts`）。
+   * 参数形状与构造函数一致，调用方可直接复用同一次装载结果。
+   */
+  reload(clients: ReadonlyArray<{ clientId: string; publicKey: string; scope: AuthScope[] }>): void {
+    this.clients.clear()
+    for (const client of clients) this.clients.set(client.clientId, client)
+  }
+
+  /** 当前生效的 client 清单（只有 clientId/scope，**不含公钥**，供日志与 /stats 展示）。 */
+  describeClients(): Array<{ clientId: string; scope: AuthScope[] }> {
+    return [...this.clients.entries()].map(([clientId, entry]) => ({ clientId, scope: entry.scope }))
+  }
+
+  /**
    * 验签入口。任一步失败抛 UnauthorizedError（§6.2.3 步骤 1..4）。
    * @param headers 请求头（小写键，node http 解析后的形态）
    * @param method HTTP 方法（大写）

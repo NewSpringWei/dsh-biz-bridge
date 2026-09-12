@@ -31,7 +31,8 @@
     <section class="panel" id="sec-keygen">
       <h2>RSA-2048 密钥对生成</h2>
       <p class="msg">浏览器本地生成签名密钥对（不依赖服务器）。输入要注册的 Client-Id，输出公钥与私钥：
-      <b>公钥</b>注册进服务端插件配置 <code>auth.clients[].publicKey</code>；<b>私钥</b>只留在本机，
+      <b>公钥</b>存成服务端数据根下的 <code>clients/&lt;clientId&gt;.pem</code>，并在
+      <code>clients/clients.json</code> 里登记该 client 的 scope；<b>私钥</b>只留在本机，
       交给对应工具/客户端使用，切勿外传或提交到代码仓库。</p>
       <div class="row">
         <div class="field grow"><label>目标 Client-Id</label>
@@ -39,7 +40,7 @@
         <button id="btnGen" class="primary">生成 RSA-2048 密钥对</button>
       </div>
       <div class="grid2" style="margin-top:12px">
-        <div class="field"><label>公钥（SPKI PEM → 服务端 auth.clients[].publicKey）</label>
+        <div class="field"><label>公钥（SPKI PEM → 服务端 clients/&lt;clientId&gt;.pem）</label>
           <textarea id="genPublic" rows="8" readonly placeholder="点击生成…"></textarea>
           <div><button id="copyPublic" class="small">复制公钥</button></div>
         </div>
@@ -112,7 +113,7 @@
       var pair = await B.makeKeyPair()
       $('genPublic').value = pair.publicPem
       $('genPrivate').value = pair.privatePem
-      msg('已为 ' + clientId + ' 生成密钥对。把公钥注册进服务端 auth.clients（scope 按用途填写），私钥仅保存在本机。', 'ok')
+      msg('已为 ' + clientId + ' 生成密钥对。把公钥存成服务端 clients/' + clientId + '.pem，并在 clients.json 里登记 scope，私钥仅保存在本机。', 'ok')
     } catch (e) { msg('生成失败：' + e.message, 'err') }
   }
   $('copyPublic').onclick = async function () {

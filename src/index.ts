@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { mkdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { NonceCache, SignatureVerifier } from './core/auth.ts'
+import { fingerprint, loadClients, seedFromComposition } from './core/clients-store.ts'
 import { loadStaticFiles } from './http/admin-page.ts'
 import {
   normalizeConfig, resolveRuntimeLayout, type RawConfig, type ResolvedConfig,
@@ -102,6 +103,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const layout = resolveRuntimeLayout(config.runtime.path)
   mkdirSync(layout.logsDir, { recursive: true })
   mkdirSync(layout.workspaceDir, { recursive: true })
+  mkdirSync(layout.clientsDir, { recursive: true })
   const db = openBridgeDb({
     path: layout.dbFile,
     journalMode: config.database.journalMode,
@@ -124,7 +126,15 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const messageFactory = createTextMessageFactory()
 
   // 4. 认证（§6.2）
-  const verifier = new SignatureVerifier(config.auth.clients, config.auth.timestampWindow)
+  //    client 公钥表以 <runtime>/clients/ 为**权威**且热重载（见 core/clients-store.ts）；
+  //    composition 配置里的 auth.clients 只在目录尚不存在时作为一次性迁移来源。
+  if (seedFromComposition(layout.clientsDir, config.auth.clients)) {
+    logger.info(`migrated ${config.auth.clients.length} client(s) from composition config to ${layout.clientsDir}`)
+  }
+  const initialClients = loadClients(layout.clientsDir)
+  for (const problem of initialClients.problems) logger.warn(`clients: ${problem}`)
+  logger.info(`clients: ${initialClients.clients.length} active from ${layout.clientsDir}`)
+  const verifier = new SignatureVerifier(initialClients.clients, config.auth.timestampWindow)
   const nonceSeen = new NonceCache(config.auth.nonceCacheSize, config.auth.timestampWindow)
 
   // 5. 调度器（§7）
@@ -185,6 +195,30 @@ export function apply(ctx: Context, rawConfig: Config): void {
     timer.unref?.()
     return () => clearInterval(timer)
   }, 'dsh-biz-bridge: scheduler pump')
+
+  // 8b. client 公钥表热重载：目录内容一变即为一个生效周期，直接重建 verifier——不重启。
+  //     用轮询而非 fs.watch：Windows 上编辑器多为"写临时文件再改名"，watch 会丢事件；
+  //     目录里只有个小 JSON 与若干 .pem，两秒一次的 stat 成本可忽略。
+  //     解析失败时**保留上一份可用集合**——一个笔误不该把所有人锁在门外。
+  ctx.effect(() => {
+    const CLIENTS_RELOAD_INTERVAL_MS = 2000
+    let last = fingerprint(layout.clientsDir)
+    const timer = setInterval(() => {
+      const current = fingerprint(layout.clientsDir)
+      if (current === last) return
+      last = current
+      const result = loadClients(layout.clientsDir)
+      for (const problem of result.problems) logger.warn(`clients: ${problem}`)
+      if (!result.parsed) {
+        logger.warn('clients: reload skipped (keeping the previous set)')
+        return
+      }
+      verifier.reload(result.clients)
+      say(`clients reloaded: ${result.clients.length} active`)
+    }, CLIENTS_RELOAD_INTERVAL_MS)
+    timer.unref?.()
+    return () => clearInterval(timer)
+  }, 'dsh-biz-bridge: clients hot reload')
 
   // 9. 卸载清理：取消活动 turn → 关闭数据库
   ctx.effect(() => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-biz-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 业务桥接插件 — 让业务系统通过标准 HTTP 协议获得 DSH agent 能力（流式/回调两种响应模式，SQLite 任务队列）",
   "type": "module",
   "main": "lib/index.mjs",
@@ -19,7 +19,7 @@
   "scripts": {
     "build": "tsdown src/index.ts --format esm --out-dir lib --clean --target node22 --no-dts --deps.never-bundle @deepseek-ai/cordis --deps.never-bundle @deepseek-ai/schemastery --deps.never-bundle @deepseek-ai/dsh-agent --deps.never-bundle @deepseek-ai/dsh-session --deps.never-bundle @deepseek-ai/dsh-llm --deps.never-bundle @deepseek-ai/dsh-session-persistence --deps.never-bundle @deepseek-ai/dsh-host-webserver",
     "release": "node scripts/release.mjs",
-    "test": "node --test --test-isolation=none tests/config.test.ts tests/auth.test.ts tests/db.test.ts tests/decode.test.ts tests/ops.test.ts tests/session-bridge.test.ts tests/runner.test.ts"
+    "test": "node --test --test-isolation=none tests/config.test.ts tests/auth.test.ts tests/clients-store.test.ts tests/db.test.ts tests/decode.test.ts tests/ops.test.ts tests/session-bridge.test.ts tests/runner.test.ts"
   },
   "keywords": [
     "dsh",

@@ -9,3 +9,6 @@ data/
 *.db-shm
 *.db-wal
 .release-staging/
+
+# 便携包构建的中间物（下载的 Node 包、npm 缓存、解压结果）——可整删重建
+.work/

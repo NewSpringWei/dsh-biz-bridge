@@ -1,7 +1,7 @@
 # dsh-biz-bridge —— profile bizbridge 用户层补丁（示例）
 #
 # 将本文件内容整体覆盖到 $DSH_HOME/profiles/bizbridge/cordis.patch.yml
-# （默认文件只是注释 + []，可直接替换）。字段逐项说明见同目录 README.md。
+# （默认文件只是注释 + []，可直接替换）。字段逐项说明见同目录 config.md。
 #
 # 分层说明（仅注释）：
 #   - 首次 dsh plugin --profile bizbridge add <tgz> 已把该 profile 初始化为
@@ -34,7 +34,7 @@
 
 # 3) LLM 默认模型 —— **独立部署（无 dsh web）必须配**
 #    不配的现象：服务能启动、HTTP 接口全部正常返回，但每个 agent 轮次都失败，
-#    报 has no provider/model。这是最容易误判为“插件坏了”的故障。
+#    报 has no provider/model。
 #    本节覆盖 dsh-base 自带的 agent-default-model 行。
 #    若宿主已通过其它方式配好默认模型（例如用过 dsh web 的设置界面），可删掉本节。
 - id: agent-default-model
@@ -43,8 +43,8 @@
     model: deepseek-flash
 
 #    ⚠️ API Key **不在这里**。llm-deepseek 的配置项只有 apiKeyEnv（**环境变量名**，
-#       默认 DEEPSEEK_API_KEY），没有 apiKey 字段——secret 刻意不进配置文件。
-#       真正的 key 放 <DSH_HOME>/.credentials.yaml（可直接编辑，改后无需重启即生效）
+#       默认 DEEPSEEK_API_KEY），没有 apiKey 字段。
+#       key 放 <DSH_HOME>/.credentials.yaml（可直接编辑，改后无需重启即生效）
 #       或启动环境变量。解析优先级：环境变量 > .credentials.yaml > 项目 .env。
 #       详见 config.md §4.2。
 
@@ -66,21 +66,12 @@
     auth:
       timestampWindow: 300
       nonceCacheSize: 10000
-      clients:
-        # 公钥整段粘贴（含 -----BEGIN/END PUBLIC KEY----- 首尾行，每行真实换行），
-        # 用 YAML 块标量 | 承接，不要压成一行带 \n 的字符串。
-        - clientId: "biz-system-a"
-          publicKey: |-
-            -----BEGIN PUBLIC KEY-----
-            把工具页生成的业务级公钥整段贴到这里，删除本注释行
-            -----END PUBLIC KEY-----
-          scope: ["stream", "callback"]
-        - clientId: "admin-ops"
-          publicKey: |-
-            -----BEGIN PUBLIC KEY-----
-            把工具页生成的管理级公钥整段贴到这里，删除本注释行
-            -----END PUBLIC KEY-----
-          scope: ["admin"]
+      # client 公钥表**不在这里** —— 它在 <runtime>/clients/ 下，改动即时生效、无需重启：
+      #   clients/clients.json     [{ clientId, scope, enabled }]
+      #   clients/<clientId>.pem   该 client 的公钥（SPKI PEM，整段原文）
+      # 本键只在那个目录尚未建立时作为**一次性迁移来源**，之后不再参与运行；
+      # 首次部署保持空数组即可（空表 = 所有 API 返回 401、静态页可达）。
+      clients: []
     scheduler:
       pollInterval: 2
       maxConcurrency: 5

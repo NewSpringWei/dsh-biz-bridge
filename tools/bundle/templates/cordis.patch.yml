@@ -1,0 +1,58 @@
+# dsh-biz-bridge profile 配置模板（便携包用）
+#
+# 构建时由 tools/bundle/bundle.mjs 复制进产物 program/templates/。
+# 部署时把它复制到 <包根>/runtime/profiles/bizbridge/cordis.patch.yml 再按注释修改。
+#
+# 路径说明：runtime.path 用相对路径 ./runtime，由 wrapper 固定的 cwd（包根）解析，
+# 因此整个目录换盘/换机器/改名都不必改配置。
+
+# 1) HTTP 载体：插件的 /bizbridge 前缀挂在它上面
+- insert:
+    - id: webserver
+      name: '@deepseek-ai/dsh-host-webserver'
+      config:
+        host: "127.0.0.1"          # 只监听本机（默认，最安全）。
+                                   # 需局域网访问才改 0.0.0.0，并务必配合防火墙；
+                                   # 前置 nginx 时注意 SSE（见产物 readme.md）。
+        port: 42731
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
+
+# 2) LLM 默认模型 —— 独立部署必须配，否则每个 agent 轮次都失败
+#    现象：服务能启动、接口全正常，但请求报 has no provider/model。
+#    本节覆盖 dsh-base 自带的 agent-default-model 行。
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: deepseek-flash
+
+# 3) API Key **不在这里**。
+#    llm-deepseek 只认环境变量名（apiKeyEnv，默认 DEEPSEEK_API_KEY），
+#    secret 落在 <包根>/runtime/.credentials.yaml。
+#    **别手改那个文件**：用 dsh-web.cmd 启动官方设置界面填写，由官方途径写入。
+
+# 4) 插件配置
+- id: dsh-biz-bridge
+  config:
+    runtime:
+      # 相对路径按 DSH 进程 cwd 解析；wrapper 固定 cwd=包根，故整个目录可搬移。
+      path: ./runtime
+    database:
+      journalMode: "WAL"
+      busyTimeout: 5000
+    auth:
+      timestampWindow: 300
+      nonceCacheSize: 10000
+      # client 公钥表**不在这里** —— 它在 <runtime>/clients/ 下，改动即时生效、无需重启：
+      #   clients/clients.json     [{ clientId, scope, enabled }]
+      #   clients/<clientId>.pem   该 client 的公钥（SPKI PEM，整段原文）
+      # 详见 runtime/README.txt。本键只在那个目录尚未建立时作为**一次性迁移来源**，
+      # 之后不再参与运行；首次部署保持空数组即可（空表 = 所有 API 返回 401、静态页可达）。
+      clients: []
+    scheduler:
+      pollInterval: 2
+      maxConcurrency: 5
+      callbackTimeout: 30
+      maxRetry: 3
+      retryInterval: 30

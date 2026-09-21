@@ -19,9 +19,9 @@
  * - bridge 主动 cancel（断连/管理取消）→ cancelled。
  */
 
-import type { RunOutcome, TextMessageFactory, TextUserMessage } from '../shared/types.ts'
+import type { RunOutcome, UserContentBlock, UserMessageFactory, UserMessageLike } from '../shared/types.ts'
 
-export type { TextMessageFactory, TextUserMessage }
+export type { UserContentBlock, UserMessageFactory, UserMessageLike }
 
 /** turn/end reason 的 JSON 安全视图（DSH LlmFailure/TurnEndReason 的结构子集）。 */
 export interface TurnEndReasonLike {
@@ -47,7 +47,7 @@ export type TurnEvent =
 /** 可驱动 agent 的最小面（真实 Agent 由 gateway 适配）。 */
 export interface DriveableAgent {
   readonly id: string
-  followup(message: TextUserMessage): void
+  followup(message: UserMessageLike): void
   /** 桥接主动取消（内部包装 cause={kind:'hook',reason}）。 */
   cancel(reason: string): void
   whenIdle(): Promise<void>
@@ -167,7 +167,7 @@ class ActiveRun {
     if (this.reason === undefined) {
       const detail = this.agentError === undefined
         ? '任务未产生 turn/end 事件（可能被外部取消或 agent 不可用）'
-        : `agent error: ${this.agentError}`
+        : `agent error: ${redactSessionIds(this.agentError)}`
       return { kind: 'failed', result: '', message: detail }
     }
     const kind = this.reason.kind
@@ -200,16 +200,41 @@ class ActiveRun {
 function errorDetail(reason: TurnEndReasonLike): string {
   if (reason.kind === 'error') {
     const error = reason.error
-    if (error?.message !== undefined && error.message !== '') return `agent turn failed: ${error.message}`
+    if (error?.message !== undefined && error.message !== '') {
+      return `agent turn failed: ${redactSessionIds(error.message)}`
+    }
     return `agent turn failed (code: ${error?.code ?? 'UNKNOWN'})`
   }
   return `agent turn ended with reason "${reason.kind}"`
 }
 
+/**
+ * 内部会话 ID 脱敏：内部 ID 形如 `<clientId>:<stream|cb>:<外部会话 id>`，
+ * 上游错误信息可能把它原样带出。对外错误里替换为 `<session>`。
+ */
+const INTERNAL_SESSION_RE = /[A-Za-z0-9_-]{1,128}:(?:stream|cb):[A-Za-z0-9:._%-]{1,256}/g
+
+/** 把文本中的内部会话 ID 替换掉。 */
+export function redactSessionIds(text: string): string {
+  return text.replace(INTERNAL_SESSION_RE, '<session>')
+}
+
+/** 递归脱敏（对象/数组/字符串）。 */
+function redactValue(value: unknown): unknown {
+  if (typeof value === 'string') return redactSessionIds(value)
+  if (Array.isArray(value)) return value.map(redactValue)
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value)) out[key] = redactValue(entry)
+    return out
+  }
+  return value
+}
+
 function safeReason(reason: TurnEndReasonLike): Record<string, unknown> {
   const out: Record<string, unknown> = { kind: reason.kind }
-  if (reason.reason !== undefined) out.reason = reason.reason
-  if (reason.error !== undefined) out.error = reason.error
+  if (reason.reason !== undefined) out.reason = redactValue(reason.reason)
+  if (reason.error !== undefined) out.error = redactValue(reason.error)
   return out
 }
 
@@ -249,13 +274,14 @@ export class RunHub {
   /**
    * 在一个会话上执行一轮用户消息驱动的 turn，直到 agent 收敛（§5.5 步骤 6）。
    * 调用前必须已通过 openAgent 取到 agent，且该会话无其他进行中任务。
+   * @param input.content 已组装好的用户内容块（文本 + 本任务入站附件块）
    */
   async runTurn(input: {
     sessionId: string
     taskId: string
-    prompt: string
+    content: UserContentBlock[]
     agent: DriveableAgent
-    messageFactory: TextMessageFactory
+    messageFactory: UserMessageFactory
     onTextDelta?: (text: string) => void
     onReasoningDelta?: (text: string) => void
     onAssistantMessage?: (turn: number, text: string, usage: Record<string, unknown> | null) => void
@@ -264,7 +290,7 @@ export class RunHub {
     if (this.active.has(sessionId)) {
       throw new Error(`dsh-biz-bridge: session "${sessionId}" already has a running task`)
     }
-    const message = input.messageFactory(input.prompt)
+    const message = input.messageFactory(input.content)
     const run = new ActiveRun(input.agent, message.id, {
       sessionId,
       taskId: input.taskId,

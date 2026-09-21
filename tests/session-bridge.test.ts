@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { AgentPool, type PersistedSessionProbe, type SessionGateway } from '../src/core/session-bridge.ts'
-import type { AgentParamOverrides, TextUserMessage } from '../src/shared/types.ts'
+import type { AgentParamOverrides, UserMessageLike } from '../src/shared/types.ts'
 import type { BridgeAgent } from '../src/core/session-bridge.ts'
 import { CwdMismatchError } from '../src/shared/errors.ts'
 
@@ -18,7 +18,7 @@ function fakeAgent(id: string): BridgeAgent {
   return {
     id,
     idle: true,
-    followup(_m: TextUserMessage): void { /* noop */ },
+    followup(_m: UserMessageLike): void { /* noop */ },
     cancel(_reason: string): void { /* noop */ },
     whenIdle(): Promise<void> { return Promise.resolve() },
     dispose(): Promise<void> { return Promise.resolve() },

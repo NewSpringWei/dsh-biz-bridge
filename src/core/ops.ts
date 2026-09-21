@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { BridgeDb, assertWireId, normalizeTimeFilter, nowIso, resolvePage } from './db.ts'
+import { toAttachmentEntry } from './attachments.ts'
 import {
   DuplicateBizIdError,
   ForbiddenError,
@@ -55,6 +56,19 @@ export function requireTaskOwned(db: BridgeDb, taskId: string, caller: Caller) {
     throw new ForbiddenError(`task "${taskId}" belongs to another client`)
   }
   return task
+}
+
+/**
+ * 读取附件账本行 + 归属守卫（§6.4.6 下载接口的鉴权口径，与任务同构）：
+ * 不存在 404；属于其它 client 且调用方非 admin → 403。
+ */
+export function requireAttachmentOwned(db: BridgeDb, attachmentId: string, caller: Caller) {
+  const attachment = db.getTaskAttachment(attachmentId)
+  if (attachment === undefined) throw new NotFoundError(`attachment "${attachmentId}" not found`)
+  if (!isAdmin(caller) && attachment.client_id !== caller.clientId) {
+    throw new ForbiddenError(`attachment "${attachmentId}" belongs to another client`)
+  }
+  return attachment
 }
 
 /**
@@ -204,6 +218,8 @@ export function detailOp(db: BridgeDb, taskId: string, caller: Caller): Record<s
     created_at: task.created_at,
     updated_at: task.updated_at,
     completed_at: task.completed_at,
+    /** 附件清单（入站在前、出站随后，§6.4.6）：attachment_id 可用于下载接口。 */
+    attachments: db.listTaskAttachments(taskId).map(toAttachmentEntry),
   }
 }
 
@@ -302,6 +318,11 @@ export function replayOp(db: BridgeDb, taskId: string, caller: Caller): Record<s
         scheduledAt: now,
         now,
       })
+      // 重播继承入站附件：账本行复制到新任务，字节仍在原落盘目录（按 rel_path 可继续读取）
+      const inherited = db.copyInboundAttachments(taskId, newId, () => randomUUID(), now)
+      if (inherited > 0) {
+        db.addLog(newId, 'attachments', `重播继承入站附件 ${inherited} 个`, { source_task_id: taskId }, now)
+      }
       return {
         task_id: newId,
         biz_id: bizId,

@@ -104,13 +104,84 @@ export interface RunOutcome {
   usage?: Record<string, unknown> | null
 }
 
-/** 结构化文本用户消息（createUserMessage 返回值的结构子集，§5.3）。 */
-export interface TextUserMessage {
+/** 附件方向：入站 = 业务系统提交给 agent；出站 = agent 产物回传业务系统。 */
+export type AttachmentDirection = 'inbound' | 'outbound'
+
+/** 业务方提交的附件声明（URI 形式，§6.4.4）：插件负责拉取并落地。 */
+export interface AttachmentRequest {
+  /** 附件类别：image 走 DSH 图片准入（可进模型视野），file 走逐字节文件存储。 */
+  type: 'image' | 'file'
+  /** 附件来源（http/https 绝对 URL，可为预签名地址）。 */
+  uri: string
+  /** 展示名（可选；缺省由 URI 末段推断）。 */
+  name?: string
+  /** 声明媒体类型（可选；图片按它校验，缺省由响应头/扩展名推断）。 */
+  mime?: string
+}
+
+/** 插件附件账本 task_attachments 一行（§4.2.4）。 */
+export interface TaskAttachmentRow {
+  id: string
+  task_id: string
+  client_id: string
+  direction: AttachmentDirection
+  name: string
+  mime: string | null
+  bytes: number
+  /** 相对该 client 工作目录的 POSIX 风格相对路径（下载与再次准入的唯一依据）。 */
+  rel_path: string
+  /** 入站来源 URI（出站为 null）。 */
+  source_uri: string | null
+  /** 内容 SHA256 哈希（出站附件用于完整性校验，入站为 null）。 */
+  content_hash: string | null
+  created_at: string
+}
+
+/** 附件清单条目（流式 done 帧 / 回调体 / redeliver 返回给业务方的形态）。 */
+export interface AttachmentEntry {
+  attachment_id: string
+  direction: AttachmentDirection
+  name: string
+  mime: string | null
+  bytes: number
+  /** 内容 SHA256 哈希（出站附件有值，入站为 null；业务系统可用于完整性校验）。 */
+  content_hash: string | null
+}
+
+/** DSH ImageAttachmentRef 的结构镜像（零依赖类型文件不引入 DSH 包）。 */
+export interface ImageAttachmentRefLike {
+  attachmentId: string
+  mediaType: string
+  bytes: number
+  width: number
+  height: number
+  name?: string
+}
+
+/** DSH FileAttachmentRef 的结构镜像。 */
+export interface FileAttachmentRefLike {
+  attachmentId: string
+  name: string
+  bytes: number
+}
+
+/**
+ * 用户消息内容块（DSH ContentBlock 中本插件会产出的三类：text / image / file，§5.3）。
+ * 与 DSH 类型结构兼容；跨包传递时由 dsh/gateway.ts 做一次断言。
+ */
+export type UserContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; attachment: ImageAttachmentRefLike }
+  | { type: 'file'; attachment: FileAttachmentRefLike }
+
+/** 结构化用户消息（createUserMessage 返回值的结构子集）。 */
+export interface UserMessageLike {
   id: string
   role: 'user'
-  content: Array<{ type: 'text'; text: string }>
+  content: UserContentBlock[]
   source: { kind: 'user' }
 }
 
-export type TextMessageFactory = (text: string) => TextUserMessage
+/** 由内容块构造用户消息（工厂绑定 DSH createUserMessage）。 */
+export type UserMessageFactory = (content: UserContentBlock[]) => UserMessageLike
 

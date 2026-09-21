@@ -10,15 +10,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { RunHub, type DriveableAgent, type TurnEndReasonLike, type TurnEvent } from '../src/core/runner.ts'
-import type { ActivityController, TextUserMessage } from '../src/core/runner.ts'
-import type { RunOutcome } from '../src/shared/types.ts'
+import type { ActivityController, UserMessageLike } from '../src/core/runner.ts'
+import type { RunOutcome, UserContentBlock } from '../src/shared/types.ts'
 
 const SESSION = 'session-1'
 
 /** 由测试手动驱动的 agent：runTurn 先同步 followup，事件由测试在 finish() 前注入。 */
 class ManualAgent implements DriveableAgent {
   readonly id: string
-  followed: TextUserMessage | undefined
+  followed: UserMessageLike | undefined
   cancelReason: string | undefined
   private resolveIdle!: () => void
   private readonly idle: Promise<void>
@@ -28,7 +28,7 @@ class ManualAgent implements DriveableAgent {
     this.idle = new Promise<void>((resolve) => { this.resolveIdle = resolve })
   }
 
-  followup(message: TextUserMessage): void {
+  followup(message: UserMessageLike): void {
     this.followed = message
   }
 
@@ -55,8 +55,13 @@ function makeActivity(): ActivityController & { events: Array<[string, string]> 
 }
 
 let messageSeq = 0
-function factory(text: string): TextUserMessage {
-  return { id: `msg-${++messageSeq}`, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
+function factory(content: UserContentBlock[]): UserMessageLike {
+  return { id: `msg-${++messageSeq}`, role: 'user', content, source: { kind: 'user' } }
+}
+
+/** 纯文本内容块（多数用例只需文本）。 */
+function text(value: string): UserContentBlock[] {
+  return [{ type: 'text', text: value }]
 }
 
 function textDelta(turn: number, text: string): TurnEvent {
@@ -79,7 +84,7 @@ async function drive(events: TurnEvent[]): Promise<{ outcome: RunOutcome; activi
   const activity = makeActivity()
   const hub = new RunHub(activity)
   const agent = new ManualAgent()
-  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', prompt: '你好', agent, messageFactory: factory })
+  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', content: text('你好'), agent, messageFactory: factory })
   assert.ok(agent.followed, 'followup must be called synchronously')
   // 模拟 driver：claim 消息 → 派发事件 → 收敛
   hub.onMessageClaimed(SESSION, agent.followed.id, 1)
@@ -114,7 +119,7 @@ test('message without preceding delta falls back to its full text (SSE + result)
   const pending = hub.runTurn({
     sessionId: SESSION,
     taskId: 'task-2',
-    prompt: 'p',
+    content: text('p'),
     agent,
     messageFactory: factory,
     onTextDelta: (text: string) => textFrames.push(text),
@@ -142,7 +147,7 @@ test('text-delta stream frames forward per delta', async () => {
   const pending = hub.runTurn({
     sessionId: SESSION,
     taskId: 'task-3',
-    prompt: 'p',
+    content: text('p'),
     agent,
     messageFactory: factory,
     onTextDelta: (text: string) => textFrames.push(text),
@@ -188,7 +193,7 @@ test('bridge cancel leads to cancelled and agent.cancel called', async () => {
   const activity = makeActivity()
   const hub = new RunHub(activity)
   const agent = new ManualAgent()
-  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-c', prompt: 'p', agent, messageFactory: factory })
+  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-c', content: text('p'), agent, messageFactory: factory })
   hub.onMessageClaimed(SESSION, agent.followed?.id ?? '', 1)
   hub.onSessionEvent(SESSION, textDelta(1, '部分'))
   assert.equal(hub.cancel(SESSION, 'client disconnected'), true)
@@ -204,7 +209,7 @@ test('agent/error fallback fails task when no turn/end arrives', async () => {
   const activity = makeActivity()
   const hub = new RunHub(activity)
   const agent = new ManualAgent()
-  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-e', prompt: 'p', agent, messageFactory: factory })
+  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-e', content: text('p'), agent, messageFactory: factory })
   hub.onAgentError(SESSION, new Error('interval failure'))
   agent.finish()
   const outcome = await pending
@@ -216,16 +221,16 @@ test('session serialization: second run on same session rejected while active', 
   const activity = makeActivity()
   const hub = new RunHub(activity)
   const agent = new ManualAgent()
-  const first = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', prompt: 'p', agent, messageFactory: factory })
+  const first = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', content: text('p'), agent, messageFactory: factory })
   await assert.rejects(
-    () => hub.runTurn({ sessionId: SESSION, taskId: 'task-2', prompt: 'p2', agent: new ManualAgent(), messageFactory: factory }),
+    () => hub.runTurn({ sessionId: SESSION, taskId: 'task-2', content: text('p2'), agent: new ManualAgent(), messageFactory: factory }),
     /already has a running task/,
   )
   agent.finish()
   await first
   // 收敛后可再跑
   const agent2 = new ManualAgent()
-  const second = hub.runTurn({ sessionId: SESSION, taskId: 'task-3', prompt: 'p3', agent: agent2, messageFactory: factory })
+  const second = hub.runTurn({ sessionId: SESSION, taskId: 'task-3', content: text('p3'), agent: agent2, messageFactory: factory })
   hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'completed' }))
   agent2.finish()
   const outcome = await second
@@ -250,7 +255,7 @@ test('RunHub.reserve: 同会话并发占位互斥（消除预检→runTurn 之�
 test('RunHub.reserve: 运行期间占位被拒，收敛后可再次占位', async () => {
   const hub = new RunHub(makeActivity())
   const agent = new ManualAgent()
-  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', prompt: 'p', agent, messageFactory: factory })
+  const pending = hub.runTurn({ sessionId: SESSION, taskId: 'task-1', content: text('p'), agent, messageFactory: factory })
   assert.equal(hub.reserve(SESSION), false)
   hub.onSessionEvent(SESSION, turnEnd(1, { kind: 'completed' }))
   agent.finish()

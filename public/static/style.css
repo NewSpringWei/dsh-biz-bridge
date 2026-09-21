@@ -97,6 +97,20 @@ li { margin: 3px 0; }
 .params-form .field { min-width: 140px; }
 .params-form select, .params-form input { width: 100%; }
 
+/* ===== 附件：入站声明编辑器 + 出站/入站清单（client 页） ===== */
+.att-editor { display: flex; flex-direction: column; gap: 6px; }
+.att-row { display: flex; gap: 6px; align-items: center; }
+.att-row select { flex: 0 0 82px; }
+.att-row .att-uri { flex: 1; min-width: 140px; }
+.att-row .att-name { flex: 0 0 150px; }
+.att-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.att-item { display: flex; gap: 8px; align-items: center; font-size: 12px; border: 1px solid #e3e6ea; border-radius: 6px; padding: 4px 8px; background: #fbfcfd; }
+.att-item .att-dir { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #eef2f6; color: #57606a; flex: 0 0 auto; }
+.att-item .att-dir.inbound { background: #e6ffec; color: #1a7f37; }
+.att-item .att-dir.outbound { background: #eef4ff; color: #0b69c3; }
+.att-item .att-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-item .att-meta { color: #8b949e; font-size: 11px; flex: 0 0 auto; }
+
 /* ===== 响应式：窄屏隐藏侧栏 ===== */
 @media (max-width: 900px) {
   .layout .sidebar { display: none; }

@@ -3,8 +3,15 @@
 **DeepSeek Harness（DSH）业务桥接插件** —— 通过标准 HTTP 协议把 DSH 的 agent
 能力开放给业务系统。业务方只发一个带签名的 HTTP 请求，就能拿到流式（SSE）或
 回调两种响应；`session_id` 复用即多轮上下文，任务调度与日志全由插件落 SQLite。
+**附件双向转接**：业务方用 URI 提交图片/文件（插件拉取并落到该 client 的工作目录），
+agent 产出的文件也会被发现、登记并以签名下载接口回传。
 
-- **当前版本**：`0.1.1`（草创/早期开发，接口可能调整，暂不建议生产关键链路）
+**安全**：面向**可信业务系统**（持私钥、经签名认证的合作方）——通道可信，但业务方转发过来的
+内容可能源自更上游，故内容层仍按不可信处理。插件负责入口校验（签名、SSRF、路径越界、越权、
+附件体量与完整性）与 agent 能力约束（`security.denyTools` 移除工具、`security.sandboxMode: read-only`
+拒绝写入与删除）；**读边界与容器隔离由运行时承担**——详见 [`docs/security.md`](docs/security.md)。
+
+- **当前版本**：`0.1.2`（草创/早期开发，接口可能调整，暂不建议生产关键链路）
 - **源码即仓库根**：完整插件工程即本目录，代码随便看、随便改。
 
 ## 目录速览
@@ -17,10 +24,11 @@
 │   ├─ building.md           #   源码构建、测试、开发调试
 │   ├─ config.md             #   配置与部署（字段参考 + 部署步骤 + FAQ）
 │   ├─ api.md                #   HTTP 接入（签名协议 + 接口定义 + 错误码）
+│   ├─ security.md           #   安全边界（插件负责什么 / 不负责什么 + 部署建议）
 │   └─ cordis.patch.yml      #   配置样例（直接复制到 profile 使用）
-├─ release/                  # 发布产物（dsh-biz-bridge-0.1.1.tgz + CHANGELOG）
+├─ release/                  # 发布产物（dsh-biz-bridge-0.1.2.tgz + CHANGELOG）
 ├─ tools/bundle/             # 便携部署包构建器（把 Node+DSH+pnpm+本插件打成可带走的目录）
-└─ public/static/            # 随插件分发的参考工具页（管理员/接入测试/密钥工具）
+└─ public/static/            # 随插件分发的参考工具页（管理员/接入测试/密钥工具；接入测试页含附件双向操作）
 ```
 
 ## 快速开始（clone 之后）
@@ -32,7 +40,7 @@
 
 ```bash
 # A. 直接用仓库随附的发布包
-ls release/dsh-biz-bridge-0.1.1.tgz
+ls release/dsh-biz-bridge-0.1.2.tgz
 
 # B. 或自己从源码构建（产物同样写到 release/）
 pnpm install && pnpm build && npm run release    # 前提见 docs/building.md
@@ -42,7 +50,7 @@ pnpm install && pnpm build && npm run release    # 前提见 docs/building.md
 运行时核心，再装本插件）
 
 ```bash
-dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.1.tgz
+dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.2.tgz
 ```
 
 **第三步 · 启动**
@@ -73,7 +81,9 @@ dsh --profile bizbridge
 **第五步 · 跑通一次**
 
 用接入测试页 `http://127.0.0.1:42731/bizbridge/static/client.html`
-跑一次 stream / callback。
+跑一次 stream / callback。附件也能在这页直接试：表单里「添加附件」填 URI，
+或点「填入本机示例」用插件自己的静态页当 file 附件；入站回执与产物清单都带「下载」按钮
+（走签名下载接口）。
 
 > 字段与降级语义（解析失败保留上一份、`enabled:false` 即停用）见
 > [`docs/config.md`](docs/config.md) 的 §auth。
@@ -94,6 +104,7 @@ dsh --profile bizbridge
 | 生成便携部署包（自带 Node/DSH/pnpm） | [`tools/bundle/README.md`](tools/bundle/README.md) |
 | 配置与部署（字段参考 + 部署步骤 + FAQ） | [`docs/config.md`](docs/config.md) |
 | HTTP 接入：签名协议、接口定义、错误码 | [`docs/api.md`](docs/api.md) |
+| 安全边界：插件负责什么、不负责什么 | [`docs/security.md`](docs/security.md) |
 | 配置样例（直接复制到 profile 使用） | [`docs/cordis.patch.yml`](docs/cordis.patch.yml) |
 | 版本历史与发布说明 | [`release/CHANGELOG.md`](release/CHANGELOG.md) |
 

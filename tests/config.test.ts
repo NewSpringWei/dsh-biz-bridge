@@ -7,9 +7,51 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolve, join, isAbsolute } from 'node:path'
-import { normalizeConfig, resolveRuntimeLayout, clientWorkspaceDir } from '../src/config/config.ts'
+import { DEFAULTS, normalizeConfig, resolveRuntimeLayout, clientWorkspaceDir } from '../src/config/config.ts'
+import { Config } from '../src/index.ts'
 
 const ORIGINAL_CWD = process.cwd()
+
+test('attachments: 开关与上限缺省、归一化、非法值拒绝', () => {
+  const c = normalizeConfig(undefined)
+  assert.equal(c.attachments.enabled, true)
+  assert.equal(c.attachments.maxItems, 10)
+  assert.equal(c.attachments.maxFileBytes, 32 * 1024 * 1024)
+  assert.equal(c.attachments.maxTotalBytes, 64 * 1024 * 1024)
+  assert.equal(c.attachments.fetchTimeout, 30)
+  assert.deepEqual(c.attachments.allowedHosts, [])
+  assert.deepEqual(c.attachments.outbound.exclude, ['attachments', 'node_modules', '.git', '.ssh', '.aws', '.kube', '.gnupg', '.docker'])
+
+  const custom = normalizeConfig({
+    attachments: {
+      enabled: false,
+      maxItems: 3,
+      allowedHosts: ['files.biz.example.com'],
+      outbound: { enabled: false, maxFiles: 2, exclude: ['tmp'] },
+    },
+  })
+  assert.equal(custom.attachments.enabled, false)
+  assert.equal(custom.attachments.maxItems, 3)
+  assert.equal(custom.attachments.maxFileBytes, DEFAULTS.attachments.maxFileBytes)
+  assert.deepEqual(custom.attachments.allowedHosts, ['files.biz.example.com'])
+  assert.equal(custom.attachments.outbound.enabled, false)
+  assert.equal(custom.attachments.outbound.maxFiles, 2)
+  assert.equal(custom.attachments.outbound.maxFileBytes, 32 * 1024 * 1024)
+  assert.deepEqual(custom.attachments.outbound.exclude, ['tmp'])
+
+  assert.throws(() => normalizeConfig({ attachments: { maxItems: 0 } }), /attachments\.maxItems/)
+  assert.throws(() => normalizeConfig({ attachments: { fetchTimeout: 0 } }), /attachments\.fetchTimeout/)
+  assert.throws(() => normalizeConfig({ attachments: { enabled: 'yes' as unknown as boolean } }), /attachments\.enabled/)
+  assert.throws(() => normalizeConfig({ attachments: { allowedHosts: [''] } }), /allowedHosts/)
+  assert.throws(() => normalizeConfig({ attachments: { outbound: { maxFiles: 0 } } }), /outbound\.maxFiles/)
+  assert.throws(() => normalizeConfig({ attachments: { outbound: { exclude: [''] } } }), /outbound\.exclude/)
+})
+
+test('attachments: schema 缺省值与 DEFAULTS 双源一致（防漂移）', () => {
+  // index.ts 的 schemastery schema 与 config.ts 的 DEFAULTS 是两处声明，必须一致
+  const fromSchema = Config({}) as { attachments: unknown }
+  assert.deepEqual(JSON.parse(JSON.stringify(fromSchema.attachments)), JSON.parse(JSON.stringify(DEFAULTS.attachments)))
+})
 
 test('defaults applied when no config given', () => {
   const c = normalizeConfig(undefined)

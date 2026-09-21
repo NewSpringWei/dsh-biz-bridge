@@ -14,6 +14,7 @@
  */
 
 import { parseAgentOverridesLenient } from './agent-options.ts'
+import { composeUserContent, listAttachmentEntries, registerArtifacts, snapshotBeforeRun } from './attachment-flow.ts'
 import { CALLBACK_TEST_TOKEN_HEADER, isCallbackTestReceiver } from '../shared/callback-test.ts'
 import { CwdMismatchError, SessionBusyError } from '../shared/errors.ts'
 import { externalSessionId } from '../shared/session-id.ts'
@@ -150,6 +151,27 @@ export class CallbackScheduler {
     logger.info(`callback task ${row.id} claimed, session=${row.session_id}`)
     this.runtime.fileLogger.info('scheduler', `callback task ${row.id} claimed`, { sessionId: row.session_id, bizId: row.biz_id })
 
+    // 附件准备（§6.4.4/§6.4.5）：执行前快照 + 入站附件内容块。
+    // 入站文件在入队时已落盘，此处只读本地并做 DSH 附件准入；失败按执行失败落库。
+    let content
+    let artifactBaseline
+    try {
+      artifactBaseline = await snapshotBeforeRun(this.runtime, row.client_id)
+      content = await composeUserContent(this.runtime, {
+        taskId: row.id,
+        clientId: row.client_id,
+        prompt: row.prompt,
+      })
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      const detail = `附件准备失败：${message}`
+      db.failTask(row.id, detail, nowIso())
+      db.addLog(row.id, 'failed', detail, { reason: 'attachments' }, nowIso())
+      logger.warn(`callback task ${row.id} attachment preparation failed: ${message}`)
+      this.runtime.fileLogger.warn('scheduler', `callback task ${row.id} attachment preparation failed: ${message}`)
+      return
+    }
+
     // openAgent（§5.2.1）。会话忙/配置性错误按执行失败落库，避免队列毒化。
     let agent
     try {
@@ -170,13 +192,27 @@ export class CallbackScheduler {
     const outcome = await hub.runTurn({
       sessionId: row.session_id,
       taskId: row.id,
-      prompt: row.prompt,
+      content,
       agent,
       messageFactory,
       onAssistantMessage: (turn: number, text: string, usage: Record<string, unknown> | null) => {
         db.addLog(row.id, 'chunk', text, { turn, usage: usage ?? undefined })
       },
     })
+    // 出站产物登记：必须在回调投递前完成，回调体据此携带清单（§6.4.5）。
+    if (outcome.kind === 'completed') {
+      try {
+        await registerArtifacts(this.runtime, {
+          taskId: row.id,
+          clientId: row.client_id,
+          before: artifactBaseline,
+        })
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error)
+        this.runtime.fileLogger.error('attachments', `task ${row.id}: artifact registration failed`, { error: detail })
+        db.addLog(row.id, 'attachments', `产物登记失败：${detail}`, {}, nowIso())
+      }
+    }
     this.settleOutcome(row, outcome)
 
     // 完成后立即尝试送达（pending 已武装）；失败由送达状态机 + 下轮扫描重试。
@@ -239,7 +275,7 @@ export class CallbackScheduler {
     this.runtime.fileLogger.info('scheduler', `callback delivery task=${row.id}`, { attempt: attempts, ok: result.ok, httpStatus: result.httpStatus ?? null, nextStatus })
   }
 
-  /** 组装 §6.4.3 回调体。 */
+  /** 组装 §6.4.3 回调体（含附件清单，§6.4.5）。 */
   private buildCallbackPayload(row: TaskRow): Record<string, unknown> {
     const result = this.runtime.db.getTaskResult(row.id)
     return {
@@ -254,6 +290,7 @@ export class CallbackScheduler {
       created_at: row.created_at,
       completed_at: row.completed_at,
       usage: parseStoredUsage(row.usage),
+      attachments: listAttachmentEntries(this.runtime, row.id),
     }
   }
 

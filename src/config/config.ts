@@ -48,6 +48,68 @@ export interface ResolvedConfig {
     /** SSE keepalive 注释行间隔（秒），设计 §6.4.1 默认 15。 */
     sseKeepalive: number
   }
+  /** agent 侧安全策略（§6.4.7）：在桥接会话自己的作用域内生效。 */
+  security: {
+    /** 是否把"转发内容不可当指令"策略写入系统提示词（默认 true）。 */
+    policySection: boolean
+    /**
+     * 在桥接会话中禁用的工具名（空数组 = 不限制，默认）。
+     *
+     * 这是**唯一的结构性约束**：它真正移除了 agent 的能力，而不是靠提示词说服模型。
+     * 工具名随宿主工具集而定（如 `bash`、`pwsh`、`web_search`、`web_fetch`）；
+     * 未知名字只记告警，不影响任务。
+     */
+    denyTools: string[]
+    /**
+     * 桥接会话的沙箱模式：`default`（不改动部署设定）/ `read-only`（拒绝一切写入与删除）/
+     * `workspace-write`（允许写，仅限该会话工作目录）。
+     *
+     * `read-only` 是插件能做的最强结构性约束：模型即使被说服要写或删，也没有能力执行。
+     * 代价是**出站产物发现失效**（agent 无法产出文件），二者不应同时启用。
+     *
+     * 注意：DSH 的读操作在所有模式下都不受边界限制，本项**不能**限制越界读取。
+     */
+    sandboxMode: 'default' | 'read-only' | 'workspace-write'
+  }
+  attachments: {
+    /** 是否接受入站附件（关闭时提交体带 attachments 即 400）。 */
+    enabled: boolean
+    /** 拉取业务方 URI 的超时（秒）。 */
+    fetchTimeout: number
+    /** 单请求入站附件个数上限。 */
+    maxItems: number
+    /** 单个入站附件字节上限。 */
+    maxFileBytes: number
+    /** 单请求入站附件总字节上限。 */
+    maxTotalBytes: number
+    /** 允许拉取的 host（含端口）白名单；空数组 = 不限制。 */
+    allowedHosts: string[]
+    /** 是否拒绝内网/环回/链路本地地址（SSRF 防护，默认 true）。 */
+    denyInternalHosts: boolean
+    /**
+     * 是否允许 `callback_url` 指向内网地址（默认 false）。
+     *
+     * 回调地址是插件主动发起的出站请求，默认与附件 URI 同样拒绝内网，避免被用作
+     * 盲 SSRF 跳板。但**内网联调**（业务系统与插件同机/同内网）是常见场景，
+     * 此时把它设为 `true`——只放开回调地址，附件 URI 仍受 `denyInternalHosts` 约束。
+     */
+    allowInternalCallbackHosts: boolean
+    /** 重定向链最大跳数（默认 5）。 */
+    maxRedirects: number
+    /** 出站产物回传（§6.4.5）。 */
+    outbound: {
+      /** 是否发现并回传产物。 */
+      enabled: boolean
+      /** 单任务最多登记多少个产物。 */
+      maxFiles: number
+      /** 单个产物字节上限。 */
+      maxFileBytes: number
+      /** 快照时跳过的目录/文件名（含插件的 inbound 落盘区 attachments）。 */
+      exclude: string[]
+      /** 敏感文件 glob 模式（按文件名匹配排除，防数据泄露）。 */
+      sensitivePatterns: string[]
+    }
+  }
 }
 
 /** 全部缺省值（设计 §8.3）。 */
@@ -63,6 +125,29 @@ export const DEFAULTS = {
     retryInterval: 30,
   },
   http: { sseKeepalive: 15 },
+  security: {
+    policySection: true,
+    denyTools: [],
+    sandboxMode: 'default',
+  },
+  attachments: {
+    enabled: true,
+    fetchTimeout: 30,
+    maxItems: 10,
+    maxFileBytes: 32 * 1024 * 1024,
+    maxTotalBytes: 64 * 1024 * 1024,
+    allowedHosts: [],
+    denyInternalHosts: true,
+    allowInternalCallbackHosts: false,
+    maxRedirects: 5,
+    outbound: {
+      enabled: true,
+      maxFiles: 20,
+      maxFileBytes: 32 * 1024 * 1024,
+      exclude: ['attachments', 'node_modules', '.git', '.ssh', '.aws', '.kube', '.gnupg', '.docker'],
+      sensitivePatterns: ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.shadow'],
+    },
+  },
 } as const
 
 /** 合法 scope 集合。 */
@@ -78,6 +163,10 @@ export type RawConfig = Partial<{
   }>
   scheduler: Partial<ResolvedConfig['scheduler']>
   http: Partial<ResolvedConfig['http']>
+  security: Partial<ResolvedConfig['security']>
+  attachments: Partial<Omit<ResolvedConfig['attachments'], 'outbound'> & {
+    outbound: Partial<ResolvedConfig['attachments']['outbound']>
+  } & { denyInternalHosts?: boolean; maxRedirects?: number }>
 }>
 
 /** 由 runtime 根派生的磁盘布局（全部绝对路径）。 */
@@ -177,5 +266,83 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     throw new Error('dsh-biz-bridge: config http.sseKeepalive must be a positive safe integer')
   }
 
-  return { runtime, database, auth: { timestampWindow, nonceCacheSize, clients }, scheduler, http }
+  const securityRaw = input.security ?? {}
+  if (securityRaw.policySection !== undefined && typeof securityRaw.policySection !== 'boolean') {
+    throw new Error('dsh-biz-bridge: config security.policySection must be a boolean')
+  }
+  const denyTools = securityRaw.denyTools ?? DEFAULTS.security.denyTools
+  if (!Array.isArray(denyTools) || denyTools.some(name => typeof name !== 'string' || name.trim() === '')) {
+    throw new Error('dsh-biz-bridge: config security.denyTools must be an array of non-empty strings')
+  }
+  const sandboxMode = securityRaw.sandboxMode ?? DEFAULTS.security.sandboxMode
+  if (!['default', 'read-only', 'workspace-write'].includes(sandboxMode)) {
+    throw new Error("dsh-biz-bridge: config security.sandboxMode must be one of 'default', 'read-only', 'workspace-write'")
+  }
+  const security = {
+    policySection: securityRaw.policySection ?? DEFAULTS.security.policySection,
+    denyTools: [...denyTools],
+    sandboxMode,
+  }
+
+  const attachmentsRaw = input.attachments ?? {}
+  const outboundRaw = attachmentsRaw.outbound ?? {}
+  if (attachmentsRaw.enabled !== undefined && typeof attachmentsRaw.enabled !== 'boolean') {
+    throw new Error('dsh-biz-bridge: config attachments.enabled must be a boolean')
+  }
+  if (outboundRaw.enabled !== undefined && typeof outboundRaw.enabled !== 'boolean') {
+    throw new Error('dsh-biz-bridge: config attachments.outbound.enabled must be a boolean')
+  }
+  if (attachmentsRaw.denyInternalHosts !== undefined && typeof attachmentsRaw.denyInternalHosts !== 'boolean') {
+    throw new Error('dsh-biz-bridge: config attachments.denyInternalHosts must be a boolean')
+  }
+  if (attachmentsRaw.allowInternalCallbackHosts !== undefined && typeof attachmentsRaw.allowInternalCallbackHosts !== 'boolean') {
+    throw new Error('dsh-biz-bridge: config attachments.allowInternalCallbackHosts must be a boolean')
+  }
+  const attachments = {
+    enabled: attachmentsRaw.enabled ?? DEFAULTS.attachments.enabled,
+    fetchTimeout: attachmentsRaw.fetchTimeout ?? DEFAULTS.attachments.fetchTimeout,
+    maxItems: attachmentsRaw.maxItems ?? DEFAULTS.attachments.maxItems,
+    maxFileBytes: attachmentsRaw.maxFileBytes ?? DEFAULTS.attachments.maxFileBytes,
+    maxTotalBytes: attachmentsRaw.maxTotalBytes ?? DEFAULTS.attachments.maxTotalBytes,
+    allowedHosts: [...(attachmentsRaw.allowedHosts ?? DEFAULTS.attachments.allowedHosts)],
+    denyInternalHosts: attachmentsRaw.denyInternalHosts ?? DEFAULTS.attachments.denyInternalHosts,
+    allowInternalCallbackHosts: attachmentsRaw.allowInternalCallbackHosts ?? DEFAULTS.attachments.allowInternalCallbackHosts,
+    maxRedirects: attachmentsRaw.maxRedirects ?? DEFAULTS.attachments.maxRedirects,
+    outbound: {
+      enabled: outboundRaw.enabled ?? DEFAULTS.attachments.outbound.enabled,
+      maxFiles: outboundRaw.maxFiles ?? DEFAULTS.attachments.outbound.maxFiles,
+      maxFileBytes: outboundRaw.maxFileBytes ?? DEFAULTS.attachments.outbound.maxFileBytes,
+      exclude: [...(outboundRaw.exclude ?? DEFAULTS.attachments.outbound.exclude)],
+      sensitivePatterns: [...(outboundRaw.sensitivePatterns ?? DEFAULTS.attachments.outbound.sensitivePatterns)],
+    },
+  }
+  for (const key of ['fetchTimeout', 'maxItems', 'maxFileBytes', 'maxTotalBytes'] as const) {
+    if (!Number.isSafeInteger(attachments[key]) || attachments[key] < 1) {
+      throw new Error(`dsh-biz-bridge: config attachments.${key} must be a positive safe integer`)
+    }
+  }
+  if (!Number.isSafeInteger(attachments.maxRedirects) || attachments.maxRedirects < 0) {
+    throw new Error('dsh-biz-bridge: config attachments.maxRedirects must be a non-negative safe integer')
+  }
+  if (attachments.allowedHosts.some(host => typeof host !== 'string' || host.trim() === '')) {
+    throw new Error('dsh-biz-bridge: config attachments.allowedHosts must be an array of non-empty strings')
+  }
+  for (const key of ['maxFiles', 'maxFileBytes'] as const) {
+    if (!Number.isSafeInteger(attachments.outbound[key]) || attachments.outbound[key] < 1) {
+      throw new Error(`dsh-biz-bridge: config attachments.outbound.${key} must be a positive safe integer`)
+    }
+  }
+  if (attachments.outbound.exclude.some(entry => typeof entry !== 'string' || entry.trim() === '')) {
+    throw new Error('dsh-biz-bridge: config attachments.outbound.exclude must be an array of non-empty strings')
+  }
+
+  return {
+    runtime,
+    database,
+    auth: { timestampWindow, nonceCacheSize, clients },
+    scheduler,
+    http,
+    security,
+    attachments,
+  }
 }

@@ -14,6 +14,7 @@ export type BizErrorCode =
   | 'SESSION_ACTIVATING'
   | 'TASK_RUNNING'
   | 'PAYLOAD_TOO_LARGE'
+  | 'NOT_IMPLEMENTED'
   | 'INTERNAL'
 
 /** 错误码 → HTTP 状态（§6.3.1）。 */
@@ -29,6 +30,7 @@ export const ERROR_HTTP_STATUS: Record<BizErrorCode, number> = {
   TASK_RUNNING: 409,
   PAYLOAD_TOO_LARGE: 413,
   INTERNAL: 500,
+  NOT_IMPLEMENTED: 501,
 }
 
 /** 桥接统一错误（业务侧抛出的全部错误都收敛为此类或其子类）。 */
@@ -135,6 +137,17 @@ export class PayloadTooLargeError extends BizError {
   constructor(message: string) {
     super('PAYLOAD_TOO_LARGE', message)
     this.name = 'PayloadTooLargeError'
+  }
+}
+
+/**
+ * 宿主未提供所需服务 → 501。当前用于：`sessionQuery` 缺失时的会话消息查询、
+ * `attachments` 缺失时的入站附件准入。
+ */
+export class NotImplementedError extends BizError {
+  constructor(message: string) {
+    super('NOT_IMPLEMENTED', message)
+    this.name = 'NotImplementedError'
   }
 }
 

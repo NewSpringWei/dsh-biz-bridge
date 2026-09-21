@@ -19,15 +19,18 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { mkdirSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { NonceCache, SignatureVerifier } from './core/auth.ts'
 import { fingerprint, loadClients, seedFromComposition } from './core/clients-store.ts'
 import { loadStaticFiles } from './http/admin-page.ts'
 import {
-  normalizeConfig, resolveRuntimeLayout, type RawConfig, type ResolvedConfig,
+  clientWorkspaceDir, normalizeConfig, resolveRuntimeLayout, type RawConfig, type ResolvedConfig,
 } from './config/config.ts'
 import { openBridgeDb } from './core/db.ts'
-import { createSessionGateway, createTextMessageFactory } from './dsh/gateway.ts'
+import { createAttachmentAdmission, createSessionGateway, createUserMessageFactory } from './dsh/gateway.ts'
+import { applyAgentSecurityPolicy } from './core/agent-policy.ts'
+import { createHttpAttachmentFetcher } from './core/attachments.ts'
 import { createBridgeHandler } from './http/http-api.ts'
 import { rescueProcessing } from './core/rescue.ts'
 import type { LoggerLike } from './shared/runtime.ts'
@@ -44,6 +47,8 @@ export interface Config {
   auth?: RawConfig['auth']
   scheduler?: RawConfig['scheduler']
   http?: RawConfig['http']
+  security?: RawConfig['security']
+  attachments?: RawConfig['attachments']
 }
 
 /** 配置 schema：缺省值与 config.ts DEFAULTS 保持一致（双源防漂移注释）。 */
@@ -75,6 +80,52 @@ export const Config: z<Config> = z.object({
   http: z.object({
     sseKeepalive: z.natural().min(1).default(15),
   }).default({ sseKeepalive: 15 }),
+  security: z.object({
+    policySection: z.boolean().default(true),
+    denyTools: z.array(z.string()).default([]),
+    sandboxMode: z.union([z.const('default'), z.const('read-only'), z.const('workspace-write')]).default('default'),
+  }).default({ policySection: true, denyTools: [], sandboxMode: 'default' }),
+  attachments: z.object({
+    enabled: z.boolean().default(true),
+    fetchTimeout: z.natural().min(1).default(30),
+    maxItems: z.natural().min(1).default(10),
+    maxFileBytes: z.natural().min(1).default(32 * 1024 * 1024),
+    maxTotalBytes: z.natural().min(1).default(64 * 1024 * 1024),
+    allowedHosts: z.array(z.string()).default([]),
+    denyInternalHosts: z.boolean().default(true),
+    allowInternalCallbackHosts: z.boolean().default(false),
+    maxRedirects: z.natural().default(5),
+    outbound: z.object({
+      enabled: z.boolean().default(true),
+      maxFiles: z.natural().min(1).default(20),
+      maxFileBytes: z.natural().min(1).default(32 * 1024 * 1024),
+      exclude: z.array(z.string()).default(['attachments', 'node_modules', '.git', '.ssh', '.aws', '.kube', '.gnupg', '.docker']),
+      sensitivePatterns: z.array(z.string()).default(['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.shadow']),
+    }).default({
+      enabled: true,
+      maxFiles: 20,
+      maxFileBytes: 32 * 1024 * 1024,
+      exclude: ['attachments', 'node_modules', '.git', '.ssh', '.aws', '.kube', '.gnupg', '.docker'],
+      sensitivePatterns: ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.shadow'],
+    }),
+  }).default({
+    enabled: true,
+    fetchTimeout: 30,
+    maxItems: 10,
+    maxFileBytes: 32 * 1024 * 1024,
+    maxTotalBytes: 64 * 1024 * 1024,
+    allowedHosts: [],
+    denyInternalHosts: true,
+    allowInternalCallbackHosts: false,
+    maxRedirects: 5,
+    outbound: {
+      enabled: true,
+      maxFiles: 20,
+      maxFileBytes: 32 * 1024 * 1024,
+      exclude: ['attachments', 'node_modules', '.git', '.ssh', '.aws', '.kube', '.gnupg', '.docker'],
+      sensitivePatterns: ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.jks', '*.keystore', '*.shadow'],
+    },
+  }),
 })
 
 export const name = 'dsh-biz-bridge'
@@ -104,6 +155,10 @@ export function apply(ctx: Context, rawConfig: Config): void {
   mkdirSync(layout.logsDir, { recursive: true })
   mkdirSync(layout.workspaceDir, { recursive: true })
   mkdirSync(layout.clientsDir, { recursive: true })
+  // 文件日志在**首次使用之前**创建：清理分支与 agent 安全策略都写它（此前声明在使用点
+  // 之后，仅因清理计数为 0 才未触发 TDZ 错误）。
+  const fileLogger = new FileLogger(layout.logsDir)
+  fileLogger.info('startup', 'plugin activating', { config: skipSecrets(config) as Record<string, unknown> })
   const db = openBridgeDb({
     path: layout.dbFile,
     journalMode: config.database.journalMode,
@@ -117,13 +172,21 @@ export function apply(ctx: Context, rawConfig: Config): void {
   }
 
   // 3. 会话桥接层（§5.2）与事件归约 hub（§5.5）
-  const gateway = createSessionGateway(ctx, layout.workspaceDir)
+  //    每个新建/恢复的 agent 在自己作用域内应用安全策略（§6.4.7）：系统提示词声明"转发内容
+  //    不可当指令"约束，并按配置禁用工具、切换沙箱模式——只影响桥接创建的会话。
+  //    安全事件写插件的文件日志（可审计），而非仅 console。
+  const gateway = createSessionGateway(ctx, layout.workspaceDir, (agent, sessionId) => {
+    applyAgentSecurityPolicy(agent, sessionId, config.security, {
+      info: (message) => fileLogger.info('security', message),
+      warn: (message) => fileLogger.warn('security', message),
+    })
+  })
   const pool = new AgentPool(gateway)
   const hub = new RunHub({
     begin: (sessionId) => pool.beginActivity(sessionId),
     end: (sessionId) => pool.endActivity(sessionId),
   })
-  const messageFactory = createTextMessageFactory()
+  const messageFactory = createUserMessageFactory()
 
   // 4. 认证（§6.2）
   //    client 公钥表以 <runtime>/clients/ 为**权威**且热重载（见 core/clients-store.ts）；
@@ -138,8 +201,6 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const nonceSeen = new NonceCache(config.auth.nonceCacheSize, config.auth.timestampWindow)
 
   // 5. 调度器（§7）
-  const fileLogger = new FileLogger(layout.logsDir)
-  fileLogger.info('startup', 'plugin activating', { config: skipSecrets(config) as Record<string, unknown> })
   const runtime = {
     config,
     db,
@@ -147,6 +208,16 @@ export function apply(ctx: Context, rawConfig: Config): void {
     hub,
     gateway,
     messageFactory,
+    // 附件转接（§6.4.4/§6.4.5）：准入端口按需探测宿主服务，拉取端口走全局 fetch，
+    // 文件读取与工作目录都锚定 per-client workspace（业务隔离边界）。
+    attachmentAdmission: createAttachmentAdmission(ctx),
+    attachmentFetcher: createHttpAttachmentFetcher({
+      denyInternalHosts: config.attachments.denyInternalHosts,
+      maxRedirects: config.attachments.maxRedirects,
+    }),
+    readWorkspaceFile: async (absolutePath: string) => new Uint8Array(await readFile(absolutePath)),
+    workspaceOf: (clientId: string) => clientWorkspaceDir(layout.workspaceDir, clientId),
+    newAttachmentId: () => randomUUID(),
     verifier,
     nonceSeen,
     logger,
@@ -156,6 +227,26 @@ export function apply(ctx: Context, rawConfig: Config): void {
     staticFiles: loadStaticFiles((message) => logger.info(message)),
     // 回调测试接收器的内部令牌：仅本进程调度器持有，用于拒绝任何外部写入（F2）。
     callbackTestToken: randomBytes(32).toString('hex'),
+  }
+  // 5b. 附件服务探测（非强依赖）：缺失时只影响带附件的请求，纯文本路径照常。
+  if (ctx.get('attachments') === undefined) {
+    logger.warn('attachments service is not mounted: inbound attachments will be rejected (mount @deepseek-ai/dsh-attachment-local)')
+  } else if (config.attachments.enabled) {
+    say(`附件转接已启用：入站 ≤${config.attachments.maxItems} 个/请求、≤${Math.floor(config.attachments.maxFileBytes / (1024 * 1024))} MiB/文件；出站产物发现${config.attachments.outbound.enabled ? '已开启' : '已关闭'}`)
+  }
+  // 5c. 安全策略生效性检查（配置组合矛盾会让防护名存实亡，故在启动时明说）。
+  if (config.security.sandboxMode === 'read-only') {
+    if (config.attachments.outbound.enabled) {
+      say('警告：security.sandboxMode=read-only 与 attachments.outbound.enabled 同时启用——agent 无法写文件，出站产物将始终为空')
+    }
+    if (ctx.get('sandboxPolicy') === undefined) {
+      say('警告：security.sandboxMode=read-only 已配置，但宿主未挂载 sandboxPolicy——只读约束不会生效')
+    } else {
+      say('安全策略：桥接会话沙箱模式 = read-only（拒绝一切写入与删除）')
+    }
+  }
+  if (config.security.denyTools.length > 0) {
+    say(`安全策略：桥接会话禁用工具 ${config.security.denyTools.join(', ')}`)
   }
   const scheduler = new CallbackScheduler(runtime)
 

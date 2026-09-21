@@ -17,7 +17,7 @@
 
 ## 签名协议
 
-每次 POST 请求必须携带以下四个头：
+每次请求必须携带以下四个头：
 
 | 头 | 值 |
 |----|---|
@@ -34,13 +34,16 @@
 
 | 段 | 说明 |
 |----|------|
-| `HTTP_METHOD` | 大写，固定 `"POST"` |
+| `HTTP_METHOD` | 大写；业务接口为 `"POST"`，附件下载支持 `"GET"` 或 `"POST"`（见 §14） |
 | `REQUEST_PATH` | 完整 pathname（含前缀），不含 query string（如 `/bizbridge/api/v1/stream`） |
 | `X_TIMESTAMP` | 与请求头 `X-Timestamp` 相同的值 |
 | `X_NONCE` | 与请求头 `X-Nonce` 相同的值 |
 | `SHA256_HEX(REQUEST_BODY)` | 请求体原始字节的 SHA-256，输出为**十六进制小写**（如 `e3b0c44298fc...`） |
 
-请求体为空时，SHA256 为空串的摘要值。
+**请求体为空时**（如 GET 附件下载），SHA256 为空串的摘要值。
+
+> **推荐**：业务系统后端集成建议使用 **POST 附件下载**（§14.3.2），签名方式与其他 POST 接口完全一致，
+> 无需处理 GET 请求的特殊逻辑。GET 方式主要供前端 `<a download>` 标签配合 fetch API 使用。
 
 ### 签名串样例
 
@@ -86,6 +89,7 @@
 | `biz_id` | string | 是 | 业务幂等键（1-128 位字母/数字/`_`/`-`）；同一 `client_id + biz_id` 不可重复 |
 | `session_id` | string | 是 | 会话 ID（1-128 位字母/数字/`_`/`-`）；多轮对话复用同一 session_id。内部自动拼接 clientId 前缀隔离，调用方无需关心 |
 | `prompt` | string | 是 | 本次用户输入文本 |
+| `attachments` | array | 否 | 入站附件声明（URI 形式，见 §14.1） |
 | `params` | object | 否 | agent 级覆盖参数（见下方 params 定义） |
 
 ### params 字段（可选）
@@ -109,10 +113,10 @@
 
 | 事件 | data 字段 | 说明 |
 |------|----------|------|
-| `start` | `{ "event": "start", "task_id": "..." }` | 任务开始 |
+| `start` | `{ "event": "start", "task_id": "...", "attachments": [...] }` | 任务开始；`attachments` 为已接收的入站附件清单（无附件时为空数组） |
 | `chunk` | `{ "event": "chunk", "content": "文本片段" }` | 实时文本输出 |
 | `reasoning` | `{ "event": "reasoning", "content": "思考片段" }` | 思考型模型的推理过程（仅 reasoningEffort 启用时出现） |
-| `done` | `{ "event": "done", "task_id": "...", "usage": {...} }` | 任务完成；`usage` 包含 token 统计 |
+| `done` | `{ "event": "done", "task_id": "...", "usage": {...}, "attachments": [...] }` | 任务完成；`usage` 包含 token 统计，`attachments` 为本任务产物清单（见 §14.2） |
 | `error` | `{ "event": "error", "task_id": "...", "reason": {...} }` | 任务失败 |
 
 每 15 秒发送一条注释行（`: ping`）作为 keepalive。
@@ -139,7 +143,8 @@
 | `biz_id` | string | 是 | 业务幂等键（规则同 stream） |
 | `session_id` | string | 是 | 会话 ID |
 | `prompt` | string | 是 | 本次用户输入文本 |
-| `callback_url` | string | 是 | 回调地址（必须为 `http://` 或 `https://` 绝对 URL） |
+| `attachments` | array | 否 | 入站附件声明（URI 形式，见 §14.1）；**入队前即完成拉取落盘**，失败则本次提交同步报错、任务不入队 |
+| `callback_url` | string | 是 | 回调地址（必须为 `http://` 或 `https://` 绝对 URL；**内网/环回地址会被拒绝**，见 §14.1 SSRF 防护） |
 | `params` | object | 否 | agent 级覆盖参数（同 stream） |
 | `priority` | number | 否 | 调度优先级（整数，越小越优先，默认 0） |
 
@@ -150,7 +155,7 @@
   "task_id": "uuid",
   "status": "queued",
   "message": "任务已入队，等待处理",
-  "ext": {}
+  "ext": { "attachments": [] }
 }
 ```
 
@@ -159,6 +164,7 @@
 | `task_id` | string | 插件分配的任务 ID（UUID） |
 | `status` | string | 固定 `"queued"` |
 | `message` | string | 描述文本 |
+| `ext.attachments` | array | 已接收的入站附件清单（无附件时为空数组；条目结构见 §14.2） |
 
 ### 约束
 
@@ -244,7 +250,11 @@
   "priority": 0,
   "created_at": "2025-01-01T00:00:00.000Z",
   "updated_at": "2025-01-01T00:00:05.000Z",
-  "completed_at": "2025-01-01T00:00:05.000Z"
+  "completed_at": "2025-01-01T00:00:05.000Z",
+  "attachments": [
+    { "attachment_id": "uuid", "direction": "inbound", "name": "chart.png", "mime": "image/png", "bytes": 20480 },
+    { "attachment_id": "uuid", "direction": "outbound", "name": "report.md", "mime": "text/markdown", "bytes": 1024 }
+  ]
 }
 ```
 
@@ -255,6 +265,7 @@
 | `error_message` | string \| null | 失败原因（仅 failed/callback_failed 有值） |
 | `params` | object \| null | 提交时的 params（解析后的 JSON） |
 | `callback_url` | string \| null | 回调地址（仅 callback 类型） |
+| `attachments` | array | 本任务附件清单（入站在前、出站随后；条目结构见 §14.2） |
 
 > **`usage` 字段结构**（DSH `TokenUsage`）：`inputTokens`、`outputTokens` 为必有；
 > `totalTokens`（整次调用总量）、`cacheReadTokens`、`cacheWriteTokens`、`reasoningTokens`
@@ -600,22 +611,194 @@
 
 ---
 
+## 14. 附件转接
+
+业务系统与 agent 之间的附件走**双向 URI 转接**：入站由业务系统给 URI、插件拉取并落到该 client 的
+工作目录后交给 agent；出站由插件发现 agent 在该工作目录里产生的文件，登记清单并开放下载。
+
+附件字节**不落数据库**：账本（`task_attachments` 表）只记 `attachment_id`、名称、MIME、字节数与
+**相对 client 工作目录的路径**；下载与再次交给模型都按该路径读取。
+
+### 14.1 入站附件声明（`attachments` 字段）
+
+`/api/v1/stream` 与 `/api/v1/callback` 的请求体可带 `attachments` 数组：
+
+```json
+{
+  "biz_id": "REQ-001",
+  "session_id": "sess-1",
+  "prompt": "看看这张图里有什么问题",
+  "attachments": [
+    { "type": "image", "uri": "https://biz.example.com/files/chart.png", "name": "chart.png" },
+    { "type": "file",  "uri": "https://biz.example.com/files/spec.pdf", "name": "规格说明.pdf" }
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | `image` 或 `file` |
+| `uri` | string | 是 | `http(s)` 绝对 URL（可用预签名地址）；**不接受其它协议** |
+| `name` | string | 否 | 展示名；缺省由 URI 末段推断（URL 解码后取文件名） |
+| `mime` | string | 否 | 声明媒体类型；图片按它校验，缺省由响应头、再按扩展名推断 |
+
+**语义**：
+
+- `type: "image"` 走 DSH 图片准入（会**解码校验**字节、按媒体类型入库），模型能直接看到图；
+  仅支持 `image/png`、`image/jpeg`、`image/webp`、`image/gif`——其它类型报 400 `INVALID_REQUEST`。
+- `type: "file"` 逐字节存储，不做类型白名单；模型侧由 DSH 投影为「只读文件句柄 + 路径」，
+  agent 用文件工具按需读取。
+- 附件**按声明顺序**进入本轮用户消息（图片顺序对模型可见）。
+- 同一请求内重名附件自动追加 `-1`、`-2` 后缀，不覆盖。
+- **拉取时机**：`stream` 在提交时、`callback` 在入队时完成下载落盘（预签名 URI 有有效期，
+  不能拖到执行期）。拉取失败 → 本次提交同步报错，任务不入库、不入队。
+- `replay` 会**继承**原回调任务的入站附件账本（字节仍在原落盘目录，不复制）。
+
+**落盘位置**（相对 client 工作目录）：
+
+```
+<runtime>/workspace/<clientId>/attachments/inbound/<task_id>/<文件名>
+```
+
+**限制**（`attachments` 配置节，见 `config.md`）：单请求条数、单文件字节、单请求总字节、
+拉取超时、host 白名单；默认 `≤10 个`、`≤32 MiB/文件`、`≤64 MiB/请求`、`30s`、不限制 host。
+`attachments.enabled=false` 时携带该字段直接报 400。
+
+**SSRF 防护**（`attachments.denyInternalHosts`，默认开启）：默认拒绝内网/环回/链路本地地址，
+覆盖 IPv4 私有段、IPv6 ULA/链路本地/多播、**IPv4 映射与 NAT64/6to4 形式**（如
+`http://[::ffff:7f00:1]/`）、以及 `localhost`/`*.local`/`*.internal`。重定向链最多
+`attachments.maxRedirects`（默认 5）跳，**每跳都重新校验目标 host**。同一开关也约束
+回调接口的 `callback_url`（见 §5.2）。
+
+### 14.2 附件清单条目
+
+以下位置返回同一结构：
+
+| 出现位置 | 字段 |
+|----------|------|
+| `stream` 的 `start` 帧 | `attachments`（入站，已接收） |
+| `stream` 的 `done` 帧 | `attachments`（入站 + 出站产物） |
+| `callback` 提交响应 | `ext.attachments`（入站，已接收） |
+| `callback` 投递体 | `attachments`（入站 + 出站产物） |
+| `POST /api/v1/tasks/{id}` 详情 | `attachments`（入站 + 出站产物） |
+
+```json
+{
+  "attachment_id": "3f1c…",
+  "direction": "outbound",
+  "name": "report.md",
+  "mime": "text/markdown",
+  "bytes": 1024,
+  "content_hash": "a1b2c3d4…"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `attachment_id` | string | 下载用的附件 ID（UUID） |
+| `direction` | string | `inbound`（业务方提交）\| `outbound`（agent 产物） |
+| `name` | string | 展示名（已净化，不含路径） |
+| `mime` | string \| null | 媒体类型（未知为 `null`） |
+| `bytes` | number | 字节数 |
+| `content_hash` | string \| null | 内容 SHA256 哈希（outbound 附件有值，inbound 为 `null`；业务系统可用于完整性校验） |
+
+### 14.3 附件下载（GET / POST）
+
+附件下载支持两种方式，业务系统可根据自身情况选择：
+
+#### 14.3.1 GET /api/v1/attachments/{id}（传统方式）
+
+**所需 scope**：可读该任务附件的一方——`admin` 或该附件所属 client（跨 client 返回 403）。
+
+**签名**：与业务接口同一签名串规则，但 `HTTP_METHOD` 为 `GET`、请求体为空
+（`SHA256_HEX("")`）；附件 ID 在**路径**里，不使用查询串。
+
+```
+GET /bizbridge/api/v1/attachments/3f1c9b2e-…
+X-Client-Id / X-Timestamp / X-Nonce / X-Signature
+```
+
+**适用场景**：前端直接用 `<a download>` 标签触发下载（需要配合 fetch API 手动签名）。
+
+#### 14.3.2 POST /api/v1/attachments/download（推荐方式）
+
+**所需 scope**：同 GET 方式。
+
+**签名**：与现有 POST 业务接口完全一致（`HTTP_METHOD` 为 `POST`、请求体为 JSON）。
+
+```json
+{
+  "attachment_id": "3f1c9b2e-…"
+}
+```
+
+```
+POST /bizbridge/api/v1/attachments/download
+Content-Type: application/json
+X-Client-Id / X-Timestamp / X-Nonce / X-Signature
+
+{"attachment_id":"3f1c9b2e-…"}
+```
+
+**适用场景**：业务系统后端集成，签名方式与其他 POST 接口一致，无需处理 GET 请求的特殊逻辑。
+
+#### 14.3.3 响应（200）：原始字节流
+
+| 响应头 | 说明 |
+|--------|------|
+| `Content-Type` | 该附件的媒体类型（未知为 `application/octet-stream`） |
+| `Content-Length` | 字节数 |
+| `Content-Disposition` | `attachment; filename="…"; filename*=UTF-8''…`（非 ASCII 名按 RFC 5987） |
+| `Cache-Control` | `no-store` |
+
+| 条件 | 结果 |
+|------|------|
+| 未签名 / 签名错误 / 时间戳超窗 / nonce 重放 | 401 `UNAUTHORIZED` |
+| 附件不存在 | 404 `NOT_FOUND` |
+| 附件属于其它 client 且调用方非 admin | 403 `FORBIDDEN` |
+| 账本有条目但文件已不在磁盘 | 404 `NOT_FOUND` |
+| outbound 附件内容已变更（完整性校验失败） | 404 `NOT_FOUND`（附带 "has been modified since registration"） |
+
+> 接口只投递**账本登记过**的附件，不接受任意路径参数——不存在路径穿越或读取工作区任意文件的口子。
+
+### 14.4 出站产物发现规则
+
+DSH 不提供"本会话产物清单"，插件用**任务执行前后的工作目录快照差**判定产物：
+
+1. 执行前记录 `相对路径 → (字节数, mtime)`；
+2. 执行后重扫，**新增或指纹变化**的文件即本任务产物（按路径排序）；
+3. 超单个文件字节上限或超单任务产物个数上限的文件**不登记**（只写运行日志）；
+4. 快照跳过名为 `attachments`、`node_modules`、`.git` 的目录（`attachments` 是入站落盘区，
+   不是产物），并**跳过符号链接**；遍历条目上限 5000。
+
+**边界**：只覆盖 agent 在**自身工作目录**（`<runtime>/workspace/<clientId>/`）内的写入；
+写到工作目录之外的文件不会被发现，也不会被回传。产物**不做复制**，下载接口按原路径读取。
+
+配置见 `attachments.outbound`（默认开启，`≤20 个/任务`、`≤32 MiB/文件`）。
+
+> **想先手工试一遍**：第一方接入测试页 `GET /bizbridge/static/client.html` 已内置附件双向操作——
+> 表单里可添加入站附件（含「填入本机示例」，用插件自己的静态页当 file 附件，零外部依赖），
+> 回执与产物清单会出现「下载」按钮，直接走 §14.3 的签名下载接口。
+> 该页面只读取 `public/static/`，改页面后重启插件即生效（不需要重新构建 `lib/`）。
+
+---
+
 ## 错误码全集
 
 所有错误响应结构：`{ "error": { "code": string, "message": string, "details": object } }`
 
 | 错误码 | HTTP 状态 | 说明 |
 |--------|----------|------|
-| `INVALID_REQUEST` | 400 | 参数校验失败（字段缺失/类型错误/终态操作） |
+| `INVALID_REQUEST` | 400 | 参数校验失败（字段缺失/类型错误/终态操作；含附件声明不合法、超条数/字节上限、图片类型不受支持） |
 | `UNAUTHORIZED` | 401 | 签名验证失败（未知 client / 时间戳超窗 / nonce 重放 / 签名不匹配） |
-| `FORBIDDEN` | 403 | scope 不足 / 操作他人任务 |
-| `NOT_FOUND` | 404 | 任务不存在 / 路由不存在 |
+| `FORBIDDEN` | 403 | scope 不足 / 操作他人任务 / 下载他人附件 |
+| `NOT_FOUND` | 404 | 任务不存在 / 路由不存在 / 附件不存在或文件已不在磁盘 |
 | `DUPLICATE_BIZ_ID` | 409 | 幂等键冲突（同一 client_id + biz_id + replay_seq 已存在） |
 | `SESSION_BUSY` | 409 | 同一 session 已有进行中任务 |
 | `TASK_RUNNING` | 409 | 并发状态竞争导致本次操作未生效（可重试）：重播续号重试耗尽 / 取消被调度抢占 / redeliver 期间状态被并发修改 |
 | `PAYLOAD_TOO_LARGE` | 413 | 请求体超限 |
 | `INTERNAL` | 500 | 服务端内部错误 |
-| `NOT_IMPLEMENTED` | 501 | 宿主未提供所需服务（当前仅 `sessionQuery` 缺失时的会话消息查询） |
+| `NOT_IMPLEMENTED` | 501 | 宿主未提供所需服务（`sessionQuery` 缺失时的会话消息查询；`attachments` 缺失时带附件的请求） |
 
 > `SESSION_ACTIVATING` 保留在错误码类型联合中，但当前实现不会触发，调用方无需专门处理。
 

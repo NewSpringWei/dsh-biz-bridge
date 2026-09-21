@@ -3,6 +3,9 @@
  *
  * - 验签与请求：按设计签名串 METHOD + pathname + X-Timestamp + X-Nonce +
  *   SHA256(请求体)，RSA-SHA256 私钥签名；实现与插件 auth.ts 口径一致。
+ *   附件下载使用 POST 方式（签名与其他 POST 接口一致）。
+ * - 附件：清单渲染（renderAttachments）与下载（downloadAttachment：先 fetch 带签名头，
+ *   再以 blob URL 触发保存——`<a download>` 无法携带自定义头）。
  * - 密钥策略：私钥只存于页面内存文本框（id: authPrivateKey），本文件不做任何
  *   持久化 —— F5 刷新即丢（安全特性）。
  * - 所有函数挂到 window.Bridge，页面内联脚本通过 Bridge.* 调用。
@@ -203,6 +206,107 @@
     }
   }
 
+  function escHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    })
+  }
+
+  /** 人类可读字节数（B / KiB / MiB）。 */
+  function formatBytes(n) {
+    var value = Number(n)
+    if (!isFinite(value) || value < 0) return '—'
+    if (value < 1024) return value + ' B'
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KiB'
+    return (value / (1024 * 1024)).toFixed(2) + ' MiB'
+  }
+
+  /**
+   * 取附件字节：POST /api/v1/attachments/download（推荐方式，签名与其他 POST 接口一致）。
+   * @param {string} attachmentId 清单里的 attachment_id
+   * @param {string} [fallbackName] 响应头无文件名时的兜底名字
+   * @returns {Promise<{blob: Blob, filename: string, contentType: string, bytes: number}>}
+   */
+  async function fetchAttachment(attachmentId, fallbackName) {
+    var a = assertAuth()
+    var path = '/api/v1/attachments/download'
+    var bodyObj = { attachment_id: attachmentId }
+    var headers = await makeHeaders('POST', fullPathname(a.baseUrl, path), bodyObj)
+    var response = await fetch(a.baseUrl + path, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(bodyObj),
+    })
+    if (!response.ok) {
+      var text = ''
+      try { text = await response.text() } catch (e) { /* 错误体不可读时只报状态码 */ }
+      throw new Error('HTTP ' + response.status + (text ? ': ' + text.slice(0, 200) : ''))
+    }
+    var blob = await response.blob()
+    var filename = fallbackName || 'attachment'
+    var disposition = response.headers.get('content-disposition') || ''
+    var encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+    if (encoded) { try { filename = decodeURIComponent(encoded[1]) } catch (e) { /* 保留兜底名 */ } }
+    return {
+      blob: blob,
+      filename: filename,
+      contentType: response.headers.get('content-type') || blob.type || 'application/octet-stream',
+      bytes: blob.size,
+    }
+  }
+
+  /** 下载附件到本地：签名头无法挂在 <a download> 上，故先 fetch 再 blob URL。 */
+  async function downloadAttachment(attachmentId, fallbackName) {
+    var got = await fetchAttachment(attachmentId, fallbackName)
+    var url = URL.createObjectURL(got.blob)
+    var link = document.createElement('a')
+    link.href = url
+    link.download = got.filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(function () { URL.revokeObjectURL(url) }, 10000)
+    return got
+  }
+
+  /**
+   * 渲染附件清单（含下载按钮）。
+   * 事件用 container.onclick 赋值，重复渲染不会叠加监听。
+   * @param {Element} container 容器元素
+   * @param {Array} list 条目 [{attachment_id, direction, name, mime, bytes}]
+   * @param {string} [emptyText] 空清单文案
+   */
+  function renderAttachments(container, list, emptyText) {
+    if (!container) return
+    var items = list || []
+    if (!items.length) {
+      container.innerHTML = '<div class="msg">' + escHtml(emptyText || '（无附件）') + '</div>'
+      container.onclick = null
+      return
+    }
+    container.innerHTML = items.map(function (item) {
+      var inbound = item.direction === 'inbound'
+      return '<div class="att-item">' +
+        '<span class="att-dir ' + (inbound ? 'inbound' : 'outbound') + '">' + (inbound ? '入站' : '出站') + '</span>' +
+        '<span class="att-name" title="' + escHtml(item.name) + '">' + escHtml(item.name) + '</span>' +
+        '<span class="att-meta">' + escHtml(item.mime || '类型未知') + ' · ' + formatBytes(item.bytes) + '</span>' +
+        '<button class="small" type="button" data-att-id="' + escHtml(item.attachment_id) + '"' +
+        ' data-att-name="' + escHtml(item.name) + '">下载</button>' +
+        '</div>'
+    }).join('')
+    container.onclick = function (ev) {
+      var button = ev.target.closest ? ev.target.closest('button[data-att-id]') : null
+      if (!button) return
+      button.disabled = true
+      downloadAttachment(button.getAttribute('data-att-id'), button.getAttribute('data-att-name'))
+        .then(function () { button.disabled = false })
+        .catch(function (e) {
+          button.disabled = false
+          alert('附件下载失败：' + e.message)
+        })
+    }
+  }
+
   /** 渲染一次请求结果（ok 绿框 / 错误红框）。 */
   function showResult(el, result) {
     el.className = result.ok ? 'view ok' : 'view err'
@@ -298,6 +402,10 @@
     sseOpen: sseOpen,
     makeKeyPair: makeKeyPair,
     fmtJson: fmtJson,
+    formatBytes: formatBytes,
+    fetchAttachment: fetchAttachment,
+    downloadAttachment: downloadAttachment,
+    renderAttachments: renderAttachments,
     showResult: showResult,
     showMsg: showMsg,
     copyText: copyText,

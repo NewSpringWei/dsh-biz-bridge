@@ -145,6 +145,115 @@ scope 权限说明：
 |----|------|------|
 | `sseKeepalive` | `15` | 流式响应 keepalive 注释行间隔（秒） |
 
+### security（agent 侧安全策略）
+
+> 入口校验只能约束"请求本身"，约束不了"agent 拿到请求后能做什么"。本节的约束注册在
+> **每个桥接会话自己的作用域**内，不影响同进程的其它 agent。完整安全边界见
+> [`security.md`](security.md)。
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| `policySection` | `true` | 把「内容可能源自上游、不可当指令」的策略写入 agent **系统提示词**（禁止执行命令、越界读写、泄露凭据、破坏性操作，且被要求时拒绝） |
+| `denyTools` | `[]` | 在桥接会话中**禁用**的工具名（空 = 不限制）。按作用域真正移除能力 |
+| `sandboxMode` | `default` | `default`（不改动部署设定）/ `read-only`（**拒绝一切写入与删除**）/ `workspace-write`（允许写，仅限该会话工作目录） |
+
+**要点**
+
+- `policySection` 是**文本层**纵深，提高拒绝概率但不保证；`denyTools` 与 `sandboxMode`
+  是**能力型**约束，不看模型是否配合。
+- `denyTools` 需按宿主工具集填写（如 `bash`/`pwsh`/`web_search`/`web_fetch`）；
+  名字写错只记告警，不影响任务。
+- `sandboxMode: read-only` 会使**出站产物发现失效**（agent 写不了文件），
+  不要与 `attachments.outbound.enabled=true` 同时启用——冲突时启动告警。
+- **读不受沙箱约束**：DSH 在所有模式下都允许读，插件无法把读限制在本 client 工作空间内
+  （`security.md` §二）。
+- 收紧示例：
+
+  ```yaml
+  security:
+    sandboxMode: read-only                          # 不让改、不让删
+    denyTools: [bash, pwsh, web_search, web_fetch]  # 移除执行与出网能力
+  attachments:
+    outbound:
+      enabled: false                                # read-only 下产物必然为空
+  ```
+
+### attachments（附件转接）
+
+> 入站：业务系统在 `stream` / `callback` 请求里用 URI 声明附件，插件拉取后落到
+> `<runtime>/workspace/<clientId>/attachments/inbound/<task_id>/`，再转成 DSH 附件交给 agent。
+> 出站：任务结束后用工作目录快照差异发现 agent 产物，登记清单并开放下载接口。
+> 接口语义见 [`api.md`](api.md) §14。
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| `enabled` | `true` | 是否接受入站附件；`false` 时请求带 `attachments` 直接 400 |
+| `fetchTimeout` | `30` | 拉取业务方 URI 的超时（秒） |
+| `maxItems` | `10` | 单请求入站附件个数上限 |
+| `maxFileBytes` | `33554432`（32 MiB） | 单个入站附件字节上限 |
+| `maxTotalBytes` | `67108864`（64 MiB） | 单请求入站附件总字节上限 |
+| `allowedHosts` | `[]` | 允许拉取的 host 白名单（含端口，如 `"files.biz.com:8443"`）；**空 = 不限制**（仍只允许 http/https） |
+| `denyInternalHosts` | `true` | SSRF 防护：拒绝内网/环回/链路本地地址（IPv4 私有段、IPv6 ULA/链路本地/多播、**IPv4 映射与 NAT64/6to4 形式**、`localhost`/`*.local`/`*.internal`）。**同时作用于入站附件 URI 与 `callback_url`** |
+| `allowInternalCallbackHosts` | `false` | 是否允许 `callback_url` 指向内网。**内网联调**（业务系统与插件同机/同内网）时设为 `true`；只放开回调地址，附件 URI 仍受 `denyInternalHosts` 约束 |
+| `maxRedirects` | `5` | 重定向链最大跳数；每跳都校验目标 host（防重定向绕过 SSRF 防护） |
+| `outbound.enabled` | `true` | 是否发现并回传 agent 产物 |
+| `outbound.maxFiles` | `20` | 单任务最多登记的产物个数 |
+| `outbound.maxFileBytes` | `33554432`（32 MiB） | 单个产物字节上限（超过则不登记） |
+| `outbound.exclude` | `["attachments","node_modules",".git",".ssh",".aws",".kube",".gnupg",".docker"]` | 快照时跳过的目录/文件名（按路径段精确匹配） |
+| `outbound.sensitivePatterns` | `[".env*","*.pem","*.key","*.p12","*.pfx","*.jks","*.keystore","*.shadow"]` | 敏感文件 glob 模式（按文件名匹配排除，防数据泄露） |
+
+**要点与取舍**
+
+- **入站必须能连到业务方的 URI**：预签名地址也要插件所在主机可达（含 DNS、代理、防火墙）。
+  拉取失败 → 本次提交同步报错，任务不入库/不入队（不会留下"半截任务"）。
+- **`allowedHosts` 是 SSRF 收敛手段**：默认不限制 host，适用于内网可信合作方；
+  若业务方地址不可完全信，请把它收紧到具体域名（端口需一并写出）。
+- **`denyInternalHosts` 默认开启**：自动拒绝内网/环回/链路本地地址，防 SSRF 攻击。
+  判定在 IP 字节层完成，**IPv4 映射 IPv6（`::ffff:7f00:1`）、NAT64、6to4 等映射写法同样被拦**。
+  配合 `maxRedirects`（默认 5 跳）防止重定向绕过。该开关**同时作用于 `callback_url`**——回调地址是
+  插件主动发起的出站请求，同样不能指向内网。
+- **内网联调需要显式放行**：若业务系统的回调地址就是内网地址（例如同机联调
+  `http://127.0.0.1:42731/...`，或内网部署），默认会被拒绝并返回 400。此时设
+  `allowInternalCallbackHosts: true`——**只放开回调地址**，附件 URI 的内网拦截不受影响。
+  也可整体关闭 `denyInternalHosts`，但那会同时放弃附件侧的 SSRF 防护，不建议。
+- **`outbound.sensitivePatterns` 默认排除密钥/凭证文件**（`.env*`/`*.pem`/`*.key` 等），
+  防止 agent 读取的敏感文件通过出站附件泄露给业务系统。
+- **图片有类型与解码校验**：仅 `png/jpeg/webp/gif`，且 DSH 会解码验证字节与声明类型一致；
+  声明的 `mime`、响应头、扩展名三者按此顺序推断，都无法判定时 400。
+- **文件没有类型白名单**，逐字节存储；模型侧由 DSH 投影为只读路径 + 句柄文本，agent 按需读取。
+- **模型必须支持图片输入**才能"看到"图：模型目录不含 `image` 时，DSH 会把图片投影为
+  `[image omitted because this model accepts text only; …]` 占位文本（不报错，但模型看不到图）。
+  可用 `POST /api/v1/models` 查 `inputModalities` 预先确认。
+- **出站边界**：只发现 agent 在**自身工作目录内**写入的文件；写在工作目录之外的文件不回传。
+  `outbound.exclude` 里保留 `attachments` 是必要的——那是插件的入站落盘区，不是产物。
+- **磁盘回收**：入站附件落在任务专属目录、产物留在 agent 原始输出位置；插件不自动删除文件
+  （`task_attachments` 账本行随任务保留 90 天后清理，文件本身由部署方按需清理）。
+
+**配置示例**
+
+```yaml
+- id: dsh-biz-bridge
+  config:
+    attachments:
+      enabled: true
+      fetchTimeout: 30
+      maxItems: 10
+      maxFileBytes: 33554432
+      maxTotalBytes: 67108864
+      allowedHosts: ["files.biz.example.com"]   # 收紧要白名单；留空数组 = 不限制
+      denyInternalHosts: true                    # SSRF 防护（默认开启）
+      allowInternalCallbackHosts: false          # 内网联调时设为 true（只放开 callback_url）
+      maxRedirects: 5                            # 重定向链上限
+      outbound:
+        enabled: true
+        maxFiles: 20
+        maxFileBytes: 33554432
+        exclude: ["attachments", "node_modules", ".git", ".ssh", ".aws", ".kube", ".gnupg", ".docker"]
+        sensitivePatterns: [".env*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.shadow"]
+```
+
+> 纯文本业务可把 `enabled` 与 `outbound.enabled` 都设为 `false`，行为与 0.1.1 一致。
+
 ### logging（运行日志）
 
 > 运行日志记录插件的 HTTP 请求、任务生命周期（创建/完成/失败/取消）、调度器事件等，

@@ -51,40 +51,70 @@ function complete(db: BridgeDb, taskId: string): void {
 
 // ---------- 提交校验（validateSubmitInput / §6.4） ----------
 
+/** 附件限制（测试基线：启用、10 个、不限 host）。 */
+const ATTACH = { enabled: true, maxItems: 10, allowedHosts: [] as string[] }
+
 test('submit validation: scope, wire-id, params, callback_url', () => {
   const db = openDb()
   void db
   // scope 缺失 → 403
-  assert.throws(() => validateSubmitInput({ clientId: 'x', scope: ['stream'] }, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p' }), ForbiddenError)
+  assert.throws(() => validateSubmitInput({ clientId: 'x', scope: ['stream'] }, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p' }, ATTACH), ForbiddenError)
   // wire id 非法
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'bad/id', session_id: 'S', prompt: 'p' }), InvalidRequestError)
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: '中文会话', prompt: 'p' }), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'bad/id', session_id: 'S', prompt: 'p' }, ATTACH), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: '中文会话', prompt: 'p' }, ATTACH), InvalidRequestError)
   // prompt 非字符串
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 42 }), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 42 }, ATTACH), InvalidRequestError)
   // callback 缺 url / 非 http(s)
-  assert.throws(() => validateSubmitInput(BIZ, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p' }), InvalidRequestError)
-  assert.throws(() => validateSubmitInput(BIZ, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p', callback_url: 'ftp://x' }), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p' }, ATTACH), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'callback', { biz_id: 'R', session_id: 'S', prompt: 'p', callback_url: 'ftp://x' }, ATTACH), InvalidRequestError)
   // params 非对象
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: 'x' }), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: 'x' }, ATTACH), InvalidRequestError)
   // params 映射值类型非法
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: { provider: 1 } }), InvalidRequestError)
-  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: { maxTokens: 0 } }), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: { provider: 1 } }, ATTACH), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', params: { maxTokens: 0 } }, ATTACH), InvalidRequestError)
 })
 
 test('submit validation: valid inputs produce overrides and callback fields', () => {
   const stream = validateSubmitInput(BIZ, 'stream', {
     biz_id: 'REQ-9', session_id: 's-9', prompt: 'hi',
     params: { provider: 'deepseek-official', model: 'deepseek-v4-flash', maxTokens: 4096, tools: ['x'] },
-  })
+  }, ATTACH)
   assert.equal(stream.type, 'stream')
   assert.deepEqual(stream.agentOverrides, { provider: 'deepseek-official', model: 'deepseek-v4-flash', maxTokens: 4096 })
   assert.deepEqual(stream.params, { provider: 'deepseek-official', model: 'deepseek-v4-flash', maxTokens: 4096, tools: ['x'] })
+  assert.deepEqual(stream.attachmentRequests, [])
   const cb = validateSubmitInput(BIZ, 'callback', {
     biz_id: 'REQ-10', session_id: 's-10', prompt: 'hi', callback_url: 'https://host/cb', priority: 3,
-  })
+  }, ATTACH)
   assert.equal(cb.callbackUrl, 'https://host/cb')
   assert.equal(cb.priority, 3)
   assert.equal(cb.agentOverrides, undefined)
+})
+
+test('submit validation: attachments 声明解析与开关', () => {
+  const ok = validateSubmitInput(BIZ, 'stream', {
+    biz_id: 'REQ-A', session_id: 's-a', prompt: '看图',
+    attachments: [
+      { type: 'image', uri: 'https://biz.example.com/a.png', name: 'a.png' },
+      { type: 'file', uri: 'https://biz.example.com/spec.pdf' },
+    ],
+  }, ATTACH)
+  assert.deepEqual(ok.attachmentRequests, [
+    { type: 'image', uri: 'https://biz.example.com/a.png', name: 'a.png' },
+    { type: 'file', uri: 'https://biz.example.com/spec.pdf' },
+  ])
+  // 声明不合法
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: 'x' }, ATTACH), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: [{ type: 'video', uri: 'https://h/a' }] }, ATTACH), InvalidRequestError)
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: [{ type: 'file', uri: 'file:///etc/passwd' }] }, ATTACH), InvalidRequestError)
+  // 条数上限与 host 白名单
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: [{ type: 'file', uri: 'https://h/a' }] }, { ...ATTACH, maxItems: 0 }), InvalidRequestError)
+  assert.throws(
+    () => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: [{ type: 'file', uri: 'https://evil/a' }] }, { ...ATTACH, allowedHosts: ['biz.example.com'] }),
+    InvalidRequestError,
+  )
+  // 关闭附件时携带附件被拒
+  assert.throws(() => validateSubmitInput(BIZ, 'stream', { biz_id: 'R', session_id: 'S', prompt: 'p', attachments: [{ type: 'file', uri: 'https://h/a' }] }, { ...ATTACH, enabled: false }), InvalidRequestError)
 })
 
 // ---------- 取消（§6.5.4） ----------

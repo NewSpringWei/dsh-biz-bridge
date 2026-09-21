@@ -49,11 +49,23 @@
           </div>
         </div>
       </div>
+      <div class="field">
+        <label>入站附件（可选；业务方给 URI，插件拉取落盘后交给 agent）
+          <button id="btnSAddAtt" type="button" class="small btn-inline">添加附件</button>
+          <button id="btnSSampleAtt" type="button" class="small btn-inline">填入本机示例</button>
+        </label>
+        <div id="sAttList" class="att-editor"></div>
+        <div class="msg">仅接受 http/https 绝对地址（可用预签名链接）；类型 image 只支持 png / jpeg / webp / gif，file 不限类型。</div>
+      </div>
       <div class="row">
         <button id="btnStream" class="primary">开始流式</button>
         <button id="btnStreamStop" class="danger" disabled>断开（取消）</button>
       </div>
       <pre class="view" id="sseView">流式内容将实时显示在这里…</pre>
+      <div class="msg" style="margin-top:8px">入站附件（start 帧回执，已拉取落盘）</div>
+      <div id="sseAttIn" class="att-list"></div>
+      <div class="msg" style="margin-top:8px">出站产物（done 帧；下载走带签名的附件接口）</div>
+      <div id="sseAttOut" class="att-list"></div>
     </section>
 
     <section class="panel" id="sec-callback">
@@ -74,6 +86,13 @@
           </div>
         </div>
       </div>
+      <div class="field">
+        <label>入站附件（可选；入队前即拉取落盘，失败则本次提交直接报错）
+          <button id="btnCAddAtt" type="button" class="small btn-inline">添加附件</button>
+          <button id="btnCSampleAtt" type="button" class="small btn-inline">填入本机示例</button>
+        </label>
+        <div id="cAttList" class="att-editor"></div>
+      </div>
       <div class="row">
         <button id="btnCallback" class="primary">提交回调</button>
       </div>
@@ -84,6 +103,10 @@
           <span id="cbStatus" class="msg">等待中…</span>
         </div>
         <pre class="view" id="cbResultView">等待回调到达…</pre>
+        <div class="msg" style="margin-top:8px">入站附件（提交回执）</div>
+        <div id="cbAttIn" class="att-list"></div>
+        <div class="msg" style="margin-top:8px">出站产物（回调体清单，可直接下载）</div>
+        <div id="cbAttOut" class="att-list"></div>
       </div>
       <div class="row" style="margin-top:10px">
         <button id="btnGoRd" class="small">追踪“再次回调”到达 →</button>
@@ -119,6 +142,8 @@
         <tbody id="mineRows"><tr><td colspan="9" class="msg">点"查询我的任务"加载（列表将自动追加 client_id = X-Client-Id 过滤）</td></tr></tbody>
       </table>
       <pre class="view" id="mineView">详情 / 日志 / 统计响应显示在这里…</pre>
+      <div class="msg" id="msgMineAtt" style="margin-top:8px;display:none">任务附件（入站在前、出站随后；点“详情”刷新）</div>
+      <div id="mineAtt" class="att-list"></div>
     </section>
   </div>
 
@@ -169,6 +194,58 @@
     return { biz_id: $(bizId).value.trim(), session_id: $(session).value.trim(), prompt: $(prompt).value, params: buildParams(prefix) }
   }
   function assertId(v) { if (!B.ID_PATTERN.test(v)) throw new Error('id 字段需匹配 1-128 位字母 / 数字 / _ / -（当前: ' + v + '）') }
+
+  /* ---- 附件（入站声明编辑器 / 出站清单渲染） ---- */
+
+  /** 追加一行入站附件声明；preset 可预填 {type,uri,name}。 */
+  function addAttRow(prefix, preset) {
+    var list = $(prefix + 'AttList')
+    var row = document.createElement('div')
+    row.className = 'att-row'
+    row.innerHTML =
+      '<select class="att-type"><option value="file">file</option><option value="image">image</option></select>' +
+      '<input class="att-uri" placeholder="https://…（http/https 绝对地址；可用预签名链接）" autocomplete="off">' +
+      '<input class="att-name" placeholder="展示名（可选）" autocomplete="off">' +
+      '<button type="button" class="small danger att-del">移除</button>'
+    if (preset) {
+      row.querySelector('.att-type').value = preset.type || 'file'
+      row.querySelector('.att-uri').value = preset.uri || ''
+      row.querySelector('.att-name').value = preset.name || ''
+    }
+    row.querySelector('.att-del').onclick = function () { list.removeChild(row) }
+    list.appendChild(row)
+    return row
+  }
+
+  /** 收集入站附件声明：URI 为空的行忽略；无有效行返回空数组（提交体里不出现该字段）。 */
+  function collectAttachments(prefix) {
+    var rows = $(prefix + 'AttList').querySelectorAll('.att-row')
+    var out = []
+    for (var i = 0; i < rows.length; i++) {
+      var uri = rows[i].querySelector('.att-uri').value.trim()
+      if (!uri) continue
+      var item = { type: rows[i].querySelector('.att-type').value, uri: uri }
+      var name = rows[i].querySelector('.att-name').value.trim()
+      if (name) item.name = name
+      out.push(item)
+    }
+    return out
+  }
+
+  /**
+   * 本机示例：拿插件自己的静态页当入站附件（file 类型）。
+   * 好处是零外部依赖就能验证"拉取 → 落 client 工作区 → 账本 → 回执"整条链路；
+   * 想验证 image 走模型视野，需要另填一个真实可拉取的图片地址。
+   */
+  function fillSampleAttachments(prefix) {
+    var a = B.auth()
+    addAttRow(prefix, { type: 'file', uri: a.baseUrl + '/static/index.html', name: 'index.html' })
+  }
+
+  $('btnSAddAtt').onclick = function () { addAttRow('s') }
+  $('btnSSampleAtt').onclick = function () { fillSampleAttachments('s') }
+  $('btnCAddAtt').onclick = function () { addAttRow('c') }
+  $('btnCSampleAtt').onclick = function () { fillSampleAttachments('c') }
 
   /* ---- 左侧导航：显隐切换 ---- */
   B.initSidebar('.sidebar', '.content > section.panel')
@@ -258,6 +335,8 @@
     try {
       body = baseBody('sBiz', 'sSession', 'sPrompt', 's')
       assertId(body.biz_id); assertId(body.session_id)
+      var attachments = collectAttachments('s')
+      if (attachments.length) body.attachments = attachments
     } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
     var view = $('sseView')
     view.className = 'view'
@@ -271,6 +350,7 @@
           if (frame.event === 'start') {
             view.textContent = ''
             appendLine('> start task_id=' + frame.task_id)
+            B.renderAttachments($('sseAttIn'), frame.attachments, '（无入站附件）')
           } else if (frame.event === 'chunk') {
             appendText(frame.content || '')
           } else if (frame.event === 'reasoning') {
@@ -279,6 +359,7 @@
             appendText(frame.content || '')
           } else if (frame.event === 'done') {
             appendLine('\n> done task_id=' + frame.task_id + ' usage=' + (frame.usage ? JSON.stringify(frame.usage) : 'null'))
+            B.renderAttachments($('sseAttOut'), frame.attachments, '（无产物）')
             closeSse()
           } else if (frame.event === 'error') {
             appendLine('\n> error ' + (frame.reason ? JSON.stringify(frame.reason) : ''))
@@ -316,6 +397,8 @@
     try {
       body = baseBody('cBiz', 'cSession', 'cPrompt', 'c')
       assertId(body.biz_id); assertId(body.session_id)
+      var attachments = collectAttachments('c')
+      if (attachments.length) body.attachments = attachments
       body.callback_url = $('cUrl').value.trim()
       if (!/^https?:\/\//.test(body.callback_url)) throw new Error('callback_url 必须是 http(s) URL')
     } catch (e) { B.showMsg($('msgComms'), String(e), 'err'); return }
@@ -331,6 +414,7 @@
       var r = await B.request('/api/v1/callback', body)
       if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
       B.showResult($('cbView'), r)
+      B.renderAttachments($('cbAttIn'), r.data && r.data.ext ? r.data.ext.attachments : [], '（无入站附件）')
       var taskId = r.data ? r.data.task_id : ''
       B.showMsg($('msgComms'), '已入队（task_id=' + taskId + '）。再用相同 biz_id 提交将得到 409 幂等冲突。', 'ok')
       if (isTestUrl && taskId) startCbPoll(taskId)
@@ -360,6 +444,7 @@
         $('cbStatus').textContent = '✅ 回调已到达 (' + d.received_at + ')'
         $('cbStatus').className = 'msg ok'
         $('cbResultView').textContent = B.fmtJson(d.raw_body)
+        B.renderAttachments($('cbAttOut'), d.raw_body ? d.raw_body.attachments : null, '（无产物）')
       } catch (e) { /* 继续轮询 */ }
     }, 2000)
   }
@@ -470,6 +555,8 @@
       var r = await B.request(path, body)
       if (!r.ok) throw new Error((r.data && r.data.error) ? r.data.error.message : ('HTTP ' + r.httpStatus))
       B.showResult($('mineView'), r)
+      $('msgMineAtt').style.display = act === 'detail' ? '' : 'none'
+      B.renderAttachments($('mineAtt'), act === 'detail' && r.data ? r.data.attachments : [], '（该任务无附件）')
       if (act === 'cancel' || act === 'replay' || act === 'redeliver') await loadMine()
       // 再次回调成功 → 带 task_id 跳到“回调追踪”并自动开始观察
       if (act === 'redeliver') {

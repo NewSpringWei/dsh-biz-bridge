@@ -16,7 +16,9 @@ import { mkdirSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DuplicateBizIdError, InvalidRequestError } from '../shared/errors.ts'
-import type { CallbackStatus, TaskLogRow, TaskRow, TaskStatus, TaskType } from '../shared/types.ts'
+import type {
+  AttachmentDirection, CallbackStatus, TaskAttachmentRow, TaskLogRow, TaskRow, TaskStatus, TaskType,
+} from '../shared/types.ts'
 
 /** 数据库打开选项。 */
 export interface BridgeDbOptions {
@@ -129,7 +131,42 @@ export class BridgeDb {
         result     TEXT NOT NULL,                   -- 结果全文（text-delta 按事件序拼接，§5.5）
         created_at TEXT NOT NULL                    -- 写入时间（ISO-8601 UTC）
       );
+      -- task_attachments：附件账本（§4.2.4）。入站=业务方 URI 拉取落盘后的记录；
+      -- 出站=agent 在本 client 工作目录内产出的文件。rel_path 是相对该 client
+      -- 工作目录的 POSIX 路径，下载接口与执行期附件准入都以它为唯一依据；
+      -- 字节与 DSH 附件库引用都不在此表（内容寻址，按需重新准入）。
+      CREATE TABLE IF NOT EXISTS task_attachments (
+        id           TEXT PRIMARY KEY,               -- 附件 ID（UUID，对外暴露的下载标识）
+        task_id      TEXT NOT NULL,                  -- 关联任务 ID（tasks.id）
+        client_id    TEXT NOT NULL,                  -- 归属 client（下载越权判定的依据）
+        direction    TEXT NOT NULL CHECK (direction IN ('inbound','outbound')), -- 方向：入站/出站
+        name         TEXT NOT NULL,                  -- 展示名（已净化，不含路径）
+        mime         TEXT,                           -- 媒体类型（未知为 NULL）
+        bytes        INTEGER NOT NULL,               -- 字节数
+        rel_path     TEXT NOT NULL,                  -- 相对 client 工作目录的 POSIX 路径
+        source_uri   TEXT,                           -- 入站来源 URI（出站为 NULL）
+        content_hash TEXT,                           -- 内容 SHA256 哈希（出站附件有值，入站为 NULL；用于完整性校验）
+        created_at   TEXT NOT NULL                   -- 登记时间（ISO-8601 UTC）
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_attachments_task ON task_attachments(task_id);
+      CREATE INDEX IF NOT EXISTS idx_task_attachments_client ON task_attachments(client_id);
     `)
+    // 增量迁移：`CREATE TABLE IF NOT EXISTS` 不会给**已存在**的表补列，存量库直接升级会
+    // 因缺列而使全部附件登记 500。此处按需 ALTER。
+    this.ensureColumn('task_attachments', 'content_hash', 'TEXT')
+  }
+
+  /**
+   * 幂等补列：表已存在且缺该列时执行 `ALTER TABLE ADD COLUMN`。
+   * @param table 表名（内部常量，非外部输入）
+   * @param column 列名
+   * @param ddl 列定义（如 `TEXT` / `INTEGER NOT NULL DEFAULT 0`）
+   */
+  private ensureColumn(table: string, column: string, ddl: string): void {
+    const columns = this.conn.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name?: unknown }>
+    if (columns.length === 0) return // 表不存在（理论上不会走到这里）
+    if (columns.some(entry => String(entry.name) === column)) return
+    this.conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
   }
 
   /** 行 → TaskRow（DB 行键 snake_case）。 */
@@ -429,6 +466,110 @@ export class BridgeDb {
     return row?.result ?? null
   }
 
+  /** 登记一条附件账本记录（§4.2.4）。 */
+  addTaskAttachment(input: {
+    id: string
+    taskId: string
+    clientId: string
+    direction: AttachmentDirection
+    name: string
+    mime: string | null
+    bytes: number
+    relPath: string
+    sourceUri: string | null
+    contentHash?: string | null
+    now: string
+  }): TaskAttachmentRow {
+    this.conn.prepare(`
+      INSERT INTO task_attachments (
+        id, task_id, client_id, direction, name, mime, bytes, rel_path, source_uri, content_hash, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      input.taskId,
+      input.clientId,
+      input.direction,
+      input.name,
+      input.mime,
+      input.bytes,
+      input.relPath,
+      input.sourceUri,
+      input.contentHash ?? null,
+      input.now,
+    )
+    const row = this.getTaskAttachment(input.id)
+    if (row === undefined) throw new Error('dsh-biz-bridge: attachment insert succeeded but read-back failed')
+    return row
+  }
+
+  /** 读单条附件（下载接口的归属校验与读取入口）。 */
+  getTaskAttachment(id: string): TaskAttachmentRow | undefined {
+    return this.mapTaskAttachment(
+      this.conn.prepare('SELECT * FROM task_attachments WHERE id = ?').get(id) as Record<string, unknown> | undefined,
+    )
+  }
+
+  /**
+   * 某任务的附件清单。
+   * 顺序 = 登记顺序（隐式 rowid）：入站附件的顺序决定模型看到的图片顺序，必须稳定。
+   */
+  listTaskAttachments(taskId: string): TaskAttachmentRow[] {
+    const rows = this.conn.prepare(
+      'SELECT * FROM task_attachments WHERE task_id = ? ORDER BY rowid ASC',
+    ).all(taskId) as Array<Record<string, unknown>>
+    return rows.map(row => this.mapTaskAttachment(row) as TaskAttachmentRow)
+  }
+
+  /**
+   * 把源任务的入站附件复制到新任务（replay 用）。
+   * 只复制账本行、不复制字节：文件仍在原落盘目录，按 rel_path 可继续读取。
+   * @returns 复制的行数
+   */
+  copyInboundAttachments(
+    fromTaskId: string,
+    toTaskId: string,
+    newId: () => string,
+    now: string,
+  ): number {
+    const rows = this.conn.prepare(
+      "SELECT * FROM task_attachments WHERE task_id = ? AND direction = 'inbound' ORDER BY rowid ASC",
+    ).all(fromTaskId) as Array<Record<string, unknown>>
+    for (const row of rows) {
+      const mapped = this.mapTaskAttachment(row) as TaskAttachmentRow
+      this.addTaskAttachment({
+        id: newId(),
+        taskId: toTaskId,
+        clientId: mapped.client_id,
+        direction: 'inbound',
+        name: mapped.name,
+        mime: mapped.mime,
+        bytes: mapped.bytes,
+        relPath: mapped.rel_path,
+        sourceUri: mapped.source_uri,
+        now,
+      })
+    }
+    return rows.length
+  }
+
+  /** 行 → TaskAttachmentRow。 */
+  private mapTaskAttachment(row: Record<string, unknown> | undefined): TaskAttachmentRow | undefined {
+    if (row === undefined) return undefined
+    return {
+      id: String(row.id),
+      task_id: String(row.task_id),
+      client_id: String(row.client_id),
+      direction: String(row.direction) as AttachmentDirection,
+      name: String(row.name),
+      mime: row.mime === null || row.mime === undefined ? null : String(row.mime),
+      bytes: Number(row.bytes),
+      rel_path: String(row.rel_path),
+      source_uri: row.source_uri === null || row.source_uri === undefined ? null : String(row.source_uri),
+      content_hash: row.content_hash === null || row.content_hash === undefined ? null : String(row.content_hash),
+      created_at: String(row.created_at),
+    }
+  }
+
   /** 按幂等键读任务。 */
   getTaskByBizKey(clientId: string, bizId: string, replaySeq: number): TaskRow | undefined {
     return this.mapTask(this.conn.prepare(
@@ -547,6 +688,7 @@ export class BridgeDb {
     const marks = ids.map(() => '?').join(',')
     this.conn.prepare(`DELETE FROM task_logs WHERE task_id IN (${marks})`).run(...ids)
     this.conn.prepare(`DELETE FROM task_results WHERE task_id IN (${marks})`).run(...ids)
+    this.conn.prepare(`DELETE FROM task_attachments WHERE task_id IN (${marks})`).run(...ids)
     // 2. 删除过期 tasks
     this.conn.prepare(
       `DELETE FROM tasks WHERE created_at < ? AND status IN ('completed','failed','callback_failed','cancelled')`,

@@ -78,3 +78,16 @@
       callbackTimeout: 30
       maxRetry: 3
       retryInterval: 30
+
+    # agent 侧安全约束：业务方的 prompt 与附件一律视为不可信输入（详见 config.md §security）
+    security:
+      policySection: true        # 把“输入不可信”策略写入系统提示词
+      sandboxMode: default       # 改 read-only 即禁止 agent 写/删文件（出站产物随之失效）
+      denyTools: []              # 按宿主工具集填写，例如：
+      # denyTools: [bash, pwsh, web_search, web_fetch]
+
+    attachments:
+      denyInternalHosts: true    # SSRF 防护：拒绝内网地址（含 IPv4 映射等写法）
+      # 内网联调（回调地址指向本机）时必须显式放开，且仅放开回调：
+      # allowInternalCallbackHosts: true
+      # allowedHosts: ["files.biz.example.com"]   # 收紧拉取来源（空 = 不限制）

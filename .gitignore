@@ -12,3 +12,7 @@ data/
 
 # 便携包构建的中间物（下载的 Node 包、npm 缓存、解压结果）——可整删重建
 .work/
+
+# 受限环境（无法写入已存在的 lib/ 与 release/）下的构建与待归位产物
+lib-build/
+release-pending/

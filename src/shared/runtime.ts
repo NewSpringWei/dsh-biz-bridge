@@ -8,7 +8,8 @@ import type { ResolvedConfig } from '../config/config.ts'
 import { BridgeDb } from '../core/db.ts'
 import { AgentPool, type SessionGateway } from '../core/session-bridge.ts'
 import { RunHub } from '../core/runner.ts'
-import type { TextMessageFactory } from './types.ts'
+import type { AttachmentAdmissionPort, AttachmentFetcher } from '../core/attachments.ts'
+import type { UserMessageFactory } from './types.ts'
 import type { FileLogger } from '../core/logger.ts'
 
 /** 日志最小面（真实实现 ctx.logger）。 */
@@ -67,7 +68,17 @@ export interface BridgeRuntime {
   pool: AgentPool
   hub: RunHub
   gateway: SessionGateway
-  messageFactory: TextMessageFactory
+  messageFactory: UserMessageFactory
+  /** DSH 附件准入端口（图片/文件持久化，§6.4.4）。 */
+  attachmentAdmission: AttachmentAdmissionPort
+  /** 业务方 URI 拉取端口（入站附件下载）。 */
+  attachmentFetcher: AttachmentFetcher
+  /** 读取 client 工作目录内的文件（执行期附件准入与下载接口共用）。 */
+  readWorkspaceFile: (absolutePath: string) => Promise<Uint8Array>
+  /** 某 client 的会话工作目录（<runtime>/workspace/<clientId>，业务隔离边界）。 */
+  workspaceOf: (clientId: string) => string
+  /** 生成附件 ID（默认 UUID；测试可注入确定性实现）。 */
+  newAttachmentId: () => string
   verifier: SignatureVerifier
   nonceSeen: NonceSeen
   logger: LoggerLike

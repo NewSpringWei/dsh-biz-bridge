@@ -22,15 +22,19 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { ForbiddenError, NotFoundError } from '../shared/errors.ts'
+import { ForbiddenError, InvalidRequestError, NotImplementedError, NotFoundError } from '../shared/errors.ts'
 import { CALLBACK_TEST_TOKEN_HEADER } from '../shared/callback-test.ts'
 import type { Caller } from '../core/auth.ts'
 import { internalSessionId } from '../shared/session-id.ts'
 import { parseJsonBody, readBody, sendError, writeJson } from './http-util.ts'
 import {
-  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, requireTaskOwned, statsOp, sessionMessagesOp,
+  cancelOp, detailOp, listOp, logsOp, priorityOp, redeliverOp, replayOp, requireAttachmentOwned,
+  requireTaskOwned, statsOp, sessionMessagesOp,
 } from '../core/ops.ts'
+import { discardInbound, downloadInbound, readAttachmentBytes, recordInbound } from '../core/attachment-flow.ts'
+import { toAttachmentEntry } from '../core/attachments.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
+import type { TaskAttachmentRow } from '../shared/types.ts'
 import { validateSubmitInput } from '../core/submission.ts'
 import { handleStreamSubmit } from './stream.ts'
 import { nowIso } from '../core/db.ts'
@@ -46,6 +50,10 @@ function pathnameOf(req: IncomingMessage): string {
 }
 
 const STATIC_PREFIX = '/bizbridge/static'
+/** 附件下载路由前缀：GET /bizbridge/api/v1/attachments/<attachment_id>（§6.4.6）。 */
+const ATTACHMENT_GET_PREFIX = '/bizbridge/api/v1/attachments'
+/** 附件下载路由：POST /bizbridge/api/v1/attachments/download（§6.4.6，与现有POST签名方式一致）。 */
+const ATTACHMENT_POST_PATH = '/bizbridge/api/v1/attachments/download'
 
 function contentTypeOf(name: string): string {
   if (name.endsWith('.html')) return 'text/html; charset=utf-8'
@@ -127,6 +135,22 @@ export function createBridgeHandler(runtime: BridgeRuntime) {
         handleCallbackTestReceive(runtime, req.headers, body, res)
         return
       }
+      // 附件下载（GET + 签名）：签名串里的方法为 GET、请求体为空串哈希（§6.2.2/§6.4.6）
+      if (req.method === 'GET' && pathname.startsWith(`${ATTACHMENT_GET_PREFIX}/`)) {
+        const caller = runtime.verifier.verify(req.headers, 'GET', pathname, Buffer.alloc(0), runtime.nonceSeen)
+        runtime.fileLogger.info('http', `<<< GET ${pathname} OK`, { clientId: caller.clientId, scope: caller.scope })
+        await handleAttachmentDownloadGet(runtime, caller, pathname, res)
+        return
+      }
+      // 附件下载（POST + 签名）：与现有POST签名方式一致，业务系统集成更简单（§6.4.6）
+      if (req.method === 'POST' && pathname === ATTACHMENT_POST_PATH) {
+        const rawBody = await readBody(req)
+        const caller = runtime.verifier.verify(req.headers, 'POST', pathname, rawBody, runtime.nonceSeen)
+        const body = parseJsonBody(rawBody)
+        runtime.fileLogger.info('http', `<<< POST ${pathname} OK`, { clientId: caller.clientId, scope: caller.scope })
+        await handleAttachmentDownloadPost(runtime, caller, body, res)
+        return
+      }
       // 其余全部 POST + 签名
       if (req.method !== 'POST') {
         runtime.fileLogger.warn('http', `method not allowed: ${req.method}`, { pathname })
@@ -162,7 +186,7 @@ async function dispatch(
   }
   if (pathname === '/bizbridge/api/v1/callback') {
     fileLogger.info('callback', `submit by ${caller.clientId}`, { sessionId: body.session_id, bizId: body.biz_id })
-    enqueueCallback(runtime, caller, body, res)
+    await enqueueCallback(runtime, caller, body, res)
     return
   }
   if (pathname === '/bizbridge/api/v1/tasks/list') {
@@ -188,8 +212,7 @@ async function dispatch(
     if (sessionId !== undefined) {
       fileLogger.info('session-messages', `query by ${caller.clientId}`, { sessionId })
       if (runtime.sessionQuery === undefined) {
-        writeJson(res, 501, { error: { code: 'NOT_IMPLEMENTED', message: 'sessionQuery service is not available', details: {} } })
-        return
+        throw new NotImplementedError('sessionQuery service is not available')
       }
       writeJson(res, 200, await sessionMessagesOp(runtime.sessionQuery, sessionId, caller, body))
       return
@@ -300,17 +323,33 @@ async function modelsOp(runtime: BridgeRuntime): Promise<Record<string, unknown>
   return { providers: result }
 }
 
-/** 回调响应入队（§3.2 / §6.4.2）：立即返回 task_id + queued。 */
-function enqueueCallback(
+/**
+ * 回调响应入队（§3.2 / §6.4.2）：立即返回 task_id + queued。
+ *
+ * 入站附件在入队前完成拉取落盘（§6.4.4）：业务方给的 URI 常为预签名地址，
+ * 拖到调度器执行时可能已过期；此处失败则任务不入库，调用方拿到同步错误。
+ */
+async function enqueueCallback(
   runtime: BridgeRuntime,
   caller: { clientId: string; scope: Array<'stream' | 'callback' | 'admin'> },
   body: Record<string, unknown>,
   res: ServerResponse,
-): void {
-  const input = validateSubmitInput(caller, 'callback', body)
+): Promise<void> {
+  const input = validateSubmitInput(caller, 'callback', body, {
+    enabled: runtime.config.attachments.enabled,
+    maxItems: runtime.config.attachments.maxItems,
+    allowedHosts: runtime.config.attachments.allowedHosts,
+    denyInternalHosts: runtime.config.attachments.denyInternalHosts,
+    allowInternalCallbackHosts: runtime.config.attachments.allowInternalCallbackHosts,
+  })
   const sid = internalSessionId(input.clientId, input.sessionId, 'cb')
   const now = nowIso()
   const taskId = randomUUID()
+  const prepared = await downloadInbound(runtime, {
+    clientId: input.clientId,
+    taskId,
+    requests: input.attachmentRequests,
+  })
   runtime.db.createTask({
     id: taskId,
     clientId: input.clientId,
@@ -325,12 +364,25 @@ function enqueueCallback(
     scheduledAt: now,
     now,
   })
+  let inbound: TaskAttachmentRow[]
+  try {
+    inbound = recordInbound(runtime, { clientId: input.clientId, taskId, prepared })
+  } catch (error: unknown) {
+    // 登记失败：账本无记录 → 已落盘文件不会被清理，就地回收避免孤儿文件（F9）
+    await discardInbound(runtime, { clientId: input.clientId, taskId })
+    throw error
+  }
+  if (inbound.length > 0) {
+    runtime.db.addLog(taskId, 'attachments', `入站附件 ${inbound.length} 个已就绪`, {
+      attachments: inbound.map(toAttachmentEntry),
+    }, now)
+  }
   runtime.db.addLog(taskId, 'received', '回调任务已入队', { biz_id: input.bizId, session_id: sid }, now)
   writeJson(res, 200, {
     task_id: taskId,
     status: 'queued',
     message: '任务已入队，等待处理',
-    ext: {},
+    ext: { attachments: inbound.map(toAttachmentEntry) },
   })
 }
 
@@ -348,6 +400,102 @@ function decodeSessionIdParam(raw: string): string | undefined {
     }
   }
   return /^[A-Za-z0-9:._-]{1,128}$/.test(decoded) ? decoded : undefined
+}
+
+// ─── 附件下载（§6.4.6） ───
+
+/**
+ * GET /bizbridge/api/v1/attachments/<attachment_id>：按附件 ID 返回字节流。
+ *
+ * 鉴权：签名头（方法 GET、请求体按空串计算摘要）+ 归属校验（admin 或该附件所属
+ * client）。只有插件账本里登记过的附件可下载，不接受任意工作区路径——路径穿越
+ * 与跨 client 读取都不成立。
+ * @param runtime 运行时依赖
+ * @param caller 已验签的调用者
+ * @param pathname 完整 pathname（含前缀与附件 ID）
+ * @param res 响应（成功时为字节流，失败抛 BizError 由上层统一映射）
+ */
+async function handleAttachmentDownloadGet(
+  runtime: BridgeRuntime,
+  caller: Caller,
+  pathname: string,
+  res: ServerResponse,
+): Promise<void> {
+  const id = pathname.slice(ATTACHMENT_GET_PREFIX.length + 1)
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    throw new NotFoundError(`route not found: ${pathname}`)
+  }
+  await sendAttachmentBytes(runtime, caller, id, res)
+}
+
+/**
+ * POST /bizbridge/api/v1/attachments/download：按附件 ID 返回字节流（与现有POST签名方式一致）。
+ *
+ * 鉴权：签名头（方法 POST、请求体按实际内容计算摘要）+ 归属校验（admin 或该附件所属
+ * client）。业务系统集成更简单，无需处理GET请求的特殊签名逻辑。
+ * @param runtime 运行时依赖
+ * @param caller 已验签的调用者
+ * @param body 请求体（需包含 attachment_id 字段）
+ * @param res 响应（成功时为字节流，失败抛 BizError 由上层统一映射）
+ */
+async function handleAttachmentDownloadPost(
+  runtime: BridgeRuntime,
+  caller: Caller,
+  body: Record<string, unknown>,
+  res: ServerResponse,
+): Promise<void> {
+  const id = body.attachment_id
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
+    throw new InvalidRequestError('attachment_id is required and must be 1-128 alphanumeric characters')
+  }
+  await sendAttachmentBytes(runtime, caller, id, res)
+}
+
+/**
+ * 附件下载的公共逻辑：归属校验 + 读取字节 + 发送响应。
+ * @param runtime 运行时依赖
+ * @param caller 已验签的调用者
+ * @param attachmentId 附件 ID
+ * @param res 响应（成功时为字节流，失败抛 BizError 由上层统一映射）
+ */
+async function sendAttachmentBytes(
+  runtime: BridgeRuntime,
+  caller: Caller,
+  attachmentId: string,
+  res: ServerResponse,
+): Promise<void> {
+  // 归属判定与任务同构（不存在 404、跨 client 403），放在 ops 层以便单测覆盖
+  const row = requireAttachmentOwned(runtime.db, attachmentId, caller)
+  let data: Uint8Array
+  try {
+    data = await readAttachmentBytes(runtime, row)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new NotFoundError(`attachment "${attachmentId}" is no longer readable: ${message}`)
+  }
+  // 校验outbound附件的完整性（如果存储了content_hash）
+  if (row.content_hash && row.direction === 'outbound') {
+    const { createHash } = await import('node:crypto')
+    const actualHash = createHash('sha256').update(data).digest('hex')
+    if (actualHash !== row.content_hash) {
+      runtime.fileLogger.warn('attachments', `integrity check failed for ${attachmentId}`, {
+        clientId: caller.clientId, taskId: row.task_id, expected: row.content_hash, actual: actualHash,
+      })
+      throw new NotFoundError(`attachment "${attachmentId}" has been modified since registration`)
+    }
+  }
+  runtime.fileLogger.info('attachments', `download ${attachmentId}`, {
+    clientId: caller.clientId, taskId: row.task_id, bytes: data.byteLength, name: row.name,
+  })
+  // 文件名可能含非 ASCII：按 RFC 5987 同时给出 filename 与 filename*
+  const encoded = encodeURIComponent(row.name)
+  res.writeHead(200, {
+    'content-type': row.mime ?? 'application/octet-stream',
+    'content-length': String(data.byteLength),
+    'content-disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+    'cache-control': 'no-store',
+  })
+  res.end(Buffer.from(data))
 }
 
 // ─── 回调测试接收器（内存存储，仅用于调试页面端到端测试） ───

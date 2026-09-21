@@ -11,7 +11,7 @@
 import { realpath } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { CwdMismatchError, isAlreadyExistsError } from '../shared/errors.ts'
-import type { AgentParamOverrides, TextUserMessage } from '../shared/types.ts'
+import type { AgentParamOverrides, UserMessageLike } from '../shared/types.ts'
 
 /** gateway 暴露的持久化探测快照（仅消费 header.cwd）。 */
 export interface PersistedSessionProbe {
@@ -24,8 +24,8 @@ export interface BridgeAgent {
   readonly id: string
   /** 当前是否空闲（agent.status === 'idle'）。 */
   readonly idle: boolean
-  /** 追加一轮用户消息并唤醒 driver（§5.3）。 */
-  followup(message: TextUserMessage): void
+  /** 追加一轮用户消息并唤醒 driver（§5.3；content 可含图片/文件块）。 */
+  followup(message: UserMessageLike): void
   /** 桥接主动取消当前 turn（内部包装 cause={kind:'hook', reason}）。 */
   cancel(reason: string): void
   /** 等待 agent 活动收敛（§5.5）。 */

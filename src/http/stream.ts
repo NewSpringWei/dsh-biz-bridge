@@ -19,9 +19,13 @@ import { beginSse, endSse, sendError, sseData, ssePing, writeJson } from './http
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import type { Caller } from '../core/auth.ts'
 import { nowIso } from '../core/db.ts'
+import {
+  composeUserContent, discardInbound, downloadInbound, recordInbound, registerArtifacts, snapshotBeforeRun,
+} from '../core/attachment-flow.ts'
+import { toAttachmentEntry } from '../core/attachments.ts'
 import { validateSubmitInput, type ValidatedSubmit } from '../core/submission.ts'
 import { internalSessionId } from '../shared/session-id.ts'
-import type { TaskRow } from '../shared/types.ts'
+import type { AttachmentEntry, TaskAttachmentRow, TaskRow } from '../shared/types.ts'
 
 const SSE_KEEPALIVE_MS = 15_000
 
@@ -59,7 +63,13 @@ export async function handleStreamSubmit(
   //    两个并发同会话请求都能通过预检，第二个随后在 openAgent 撞上 DSH 的
   //    "already owned by an active write handle" 而落 500（且白插一条任务）。
   //    改为原子占位后，并发同会话稳定返回 409 SESSION_BUSY 且不入库。
-  const input = validateSubmitInput(caller, 'stream', body)
+  const input = validateSubmitInput(caller, 'stream', body, {
+    enabled: runtime.config.attachments.enabled,
+    maxItems: runtime.config.attachments.maxItems,
+    allowedHosts: runtime.config.attachments.allowedHosts,
+    denyInternalHosts: runtime.config.attachments.denyInternalHosts,
+    allowInternalCallbackHosts: runtime.config.attachments.allowInternalCallbackHosts,
+  })
   const sid = internalSessionId(input.clientId, input.sessionId, 'stream')
   if (!runtime.hub.reserve(sid)) {
     const busy = `session "${sid}" already has a running task`
@@ -85,6 +95,12 @@ async function runStreamTask(
   // 2. 入库 received + 日志
   const now = nowIso()
   const taskId = randomUUID()
+  // 2a. 入站附件：提交时即拉取落盘（§6.4.4）。失败则任务不入库，直接按统一错误返回。
+  const prepared = await downloadInbound(runtime, {
+    clientId: input.clientId,
+    taskId,
+    requests: input.attachmentRequests,
+  })
   const row = db.createTask({
     id: taskId,
     clientId: input.clientId,
@@ -98,8 +114,38 @@ async function runStreamTask(
     scheduledAt: now,
     now,
   })
+  let inbound: TaskAttachmentRow[]
+  try {
+    inbound = recordInbound(runtime, { clientId: input.clientId, taskId, prepared })
+  } catch (error: unknown) {
+    // 登记失败：账本无记录 → 已落盘文件不会被清理，就地回收避免孤儿文件（F9）
+    await discardInbound(runtime, { clientId: input.clientId, taskId })
+    throw error
+  }
+  if (inbound.length > 0) {
+    db.addLog(taskId, 'attachments', `入站附件 ${inbound.length} 个已就绪`, {
+      attachments: inbound.map(toAttachmentEntry),
+    }, now)
+  }
   db.addLog(taskId, 'received', '流式任务已接收', { biz_id: input.bizId, session_id: sid }, now)
   runtime.fileLogger.info('stream', `task ${taskId} created`, { bizId: input.bizId, sessionId: sid, clientId: input.clientId })
+
+  // 2b. 出站产物基线 + 内容块组装（含附件准入）；失败按"入库后失败兜底"落终态。
+  let content
+  let artifactBaseline
+  try {
+    artifactBaseline = await snapshotBeforeRun(runtime, input.clientId)
+    content = await composeUserContent(runtime, {
+      taskId,
+      clientId: input.clientId,
+      prompt: input.prompt,
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    finalizePreExecutionFailure(runtime, row, 'failed', `附件准备失败：${message}`)
+    sendError(res, error)
+    return
+  }
 
   // 3. openAgent（§5.2.1）；失败按“入库后失败兜底”落终态
   let agent
@@ -158,7 +204,7 @@ async function runStreamTask(
     runtime.logger.info(`stream task ${taskId} cancelled on client disconnect`)
   })
 
-  sseData(res, { event: 'start', task_id: taskId })
+  sseData(res, { event: 'start', task_id: taskId, attachments: inbound.map(toAttachmentEntry) })
   keepalive = setInterval(() => ssePing(res), SSE_KEEPALIVE_MS)
   keepalive.unref?.() // 不让 keepalive 独自撑住事件循环（复审 F4）
 
@@ -167,7 +213,7 @@ async function runStreamTask(
     const outcome = await runtime.hub.runTurn({
       sessionId: sid,
       taskId,
-      prompt: input.prompt,
+      content,
       agent,
       messageFactory: runtime.messageFactory,
       onTextDelta: (text: string) => {
@@ -185,10 +231,25 @@ async function runStreamTask(
     // 7. 按结局落库（终态由 SQL WHERE status 守卫，不覆盖并发取消）+ SSE 终帧
     const endTime = nowIso()
     if (outcome.kind === 'completed') {
+      // 7a. 出站产物登记（§6.4.5）：快照差异 → 账本 → done 帧清单；登记失败不影响任务完成
+      let artifacts: AttachmentEntry[] = []
+      try {
+        artifacts = await registerArtifacts(runtime, {
+          taskId,
+          clientId: input.clientId,
+          before: artifactBaseline,
+        })
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error)
+        runtime.fileLogger.error('attachments', `task ${taskId}: artifact registration failed`, { error: detail })
+        db.addLog(taskId, 'attachments', `产物登记失败：${detail}`, {}, endTime)
+      }
       db.completeTask(taskId, { result: outcome.result, usage: outcome.usage, isCallback: false, now: endTime })
       db.addLog(taskId, 'completed', '任务完成', { usage: outcome.usage ?? undefined }, endTime)
       runtime.fileLogger.info('stream', `task ${taskId} completed`, { usage: outcome.usage ?? undefined })
-      if (!clientGone) sseData(res, { event: 'done', task_id: taskId, usage: outcome.usage ?? null })
+      if (!clientGone) {
+        sseData(res, { event: 'done', task_id: taskId, usage: outcome.usage ?? null, attachments: artifacts })
+      }
     } else if (outcome.kind === 'failed') {
       db.failTask(taskId, outcome.message, endTime)
       db.addLog(taskId, 'failed', outcome.message, { reason: outcome.reason }, endTime)

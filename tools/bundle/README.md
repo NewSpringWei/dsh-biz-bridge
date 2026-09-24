@@ -18,8 +18,8 @@ pnpm install && pnpm build && npm run release   # 出插件 tgz（release/ 下�
 # 改 tools/bundle/bundle.config.json —— 至少确认 dshVersion / pnpmVersion / nodeVersion / platform
 node tools/bundle/bundle.mjs                    # 组装（联网：下载 Node + 安装 DSH）
 
-node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.1-win-x64   # 交付前自检
-tar -a -cf dist/dsh-biz-bridge-0.1.1-win-x64.zip -C dist dsh-biz-bridge-0.1.1-win-x64
+node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.3-win-x64   # 交付前自检
+tar -a -cf dist/dsh-biz-bridge-0.1.3-win-x64.zip -C dist dsh-biz-bridge-0.1.3-win-x64
 ```
 
 > 末条把 zip 写进 `dist/`（已被 gitignore）。若写在仓库根，`*.zip` 并不在忽略列表里，
@@ -94,7 +94,7 @@ dsh-biz-bridge-<插件版本>-<平台>/
 `data/` `logs/` 等——该目录**不再是干净交付物**，而且看不出区别。
 
 ```bash
-node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.1-win-x64
+node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.3-win-x64
 ```
 
 通过则回显 `✓`、退出码 0；被污染则列出多余项、退出码 1。**验收请在副本上做。**

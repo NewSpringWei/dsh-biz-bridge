@@ -181,8 +181,11 @@ function registerPolicySection(agentCtx: ContextLike, sessionId: string, logger:
 /**
  * 在 agent 作用域内禁用指定工具。
  *
- * 工具名由部署方给出（不同宿主的工具集不同），因此**未知工具名按告警处理而非抛错**：
- * 限制失败只应削弱防护，不应让任务整体失败。
+ * 工具名由部署方给出（不同宿主的工具集不同）。这里必须**逐名调用**：DSH 的
+ * `tools.restrict()` 对整批名字是先校验、后应用（`packages/core/tools/src/index.ts`
+ * 的实现），名单里只要有一个当前作用域不存在的工具名，整批就抛错、**全部限制都不生效**。
+ * 逐名之后，未知名字只淘汰它自己，其余照常生效——符合"限制失败只应削弱防护，
+ * 不应让任务整体失败"的取向。多次 `restrict()` 之间是**限制相交**关系，叠加正确。
  */
 function restrictTools(
   agentCtx: ContextLike,
@@ -195,11 +198,17 @@ function restrictTools(
     logger.warn(`session ${sessionId}: tools service is not mounted; denyTools was not applied`)
     return
   }
-  try {
-    tools.restrict({ deny: [...denyTools] })
-    logger.info(`session ${sessionId}: tools denied: ${denyTools.join(', ')}`)
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    logger.warn(`session ${sessionId}: tools.restrict({ deny: [${denyTools.join(', ')}] }) failed: ${message}`)
+  const applied: string[] = []
+  for (const name of denyTools) {
+    try {
+      tools.restrict({ deny: [name] })
+      applied.push(name)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn(`session ${sessionId}: deny tool "${name}" was skipped: ${message}`)
+    }
+  }
+  if (applied.length > 0) {
+    logger.info(`session ${sessionId}: tools denied: ${applied.join(', ')}`)
   }
 }

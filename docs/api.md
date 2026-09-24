@@ -97,7 +97,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `provider` | string | LLM 提供商路由键（如 `"deepseek-official"`） |
-| `model` | string | 模型 ID（如 `"deepseek-flash"`、`"deepseek-v4-flash"`） |
+| `model` | string | 模型 ID（如 `"deepseek-flash"`、`"deepseek-v4-pro"`） |
 | `reasoningEffort` | string | 推理力度（如 `"high"`） |
 | `maxTokens` | number | 最大输出 token 数（正整数） |
 
@@ -481,9 +481,9 @@
           "inputModalities": ["text", "image"]
         },
         {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek-V4-Flash",
-          "description": "Fast, efficient, and economical; suited to focused, routine, or parallel tasks.",
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek-V4-Pro",
+          "description": "Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.",
           "inputModalities": null
         }
       ]

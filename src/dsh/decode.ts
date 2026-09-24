@@ -1,5 +1,5 @@
 /**
- * DSH session/event → 归一化 TurnEvent 解码器（0.1.5 会话日志 v3 对齐）。
+ * DSH session/event → 归一化 TurnEvent 解码器（对齐 DSH 0.1.7 / 会话日志 v4）。
  *
  * 隔离粘合点：runner（归约内核）只消费归一化 TurnEvent，本文件负责把 DSH
  * 事件载荷翻译过去——官方事件模型（事件名/载荷/流记录形态）变更只改这里。
@@ -8,7 +8,7 @@
  * - 本文件 **不 import 任何 @deepseek-ai 包**，输入输出都是自定结构类型，
  *   因此可脱离 DSH 环境做纯单测（tests/decode.test.ts）。
  * - 解码器对畸形/未知载荷一律防御性跳过并返回 []，绝不抛错污染事件路由。
- * - v3 流模型：assistant/chunk 事件已从 SessionEventMap 移除，token 增量内嵌在
+ * - 内嵌 stream 流模型（0.1.5 的 v3 引入、0.1.7 的 v4 未变）：assistant/chunk 已从 SessionEventMap 移除，token 增量内嵌在
  *   assistant/message 与 assistant/attempt 的 `stream: AssistantStreamRecord[]`
  *   中。本解码器展开 stream（text-chunks / reasoning-chunks / 原始 chunk），
  *   按记录序还原为 text-delta / reasoning-delta 归一化事件；消息全文与 usage

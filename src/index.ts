@@ -252,7 +252,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
 
   // 6. 全局事件监听（ACP 桥接同款：插件级 ctx.on + 按 session 路由/所有权过滤）。
   //    会话串行（§5.8）保证同一 session 至多一个 ActiveRun，事件天然不串流。
-  //    session/event 先经 gateway 的 decode 归一化（DSH 0.1.5 v3 流模型），
+  //    session/event 先经 gateway 的 decode 归一化（DSH 0.1.7 / 会话日志 v4；内嵌 stream 模型未变），
   //    runner 只消费与 DSH 版本解耦的 TurnEvent。
   ctx.on('session/event', (session, event: SessionEventLike) => {
     const sessionId = session.header.id

@@ -1,6 +1,6 @@
 /**
  * Turn 驱动器与事件归约（§5.5 通用执行内核）——结构化实现，供流式/回调两路
- * executor 复用；对齐 DSH 0.1.5（会话日志 v3）流模型。
+ * executor 复用；对齐 DSH 0.1.7（会话日志 v4）流模型。
  *
  * 本模块是 **DSH 无关的归约内核**：消费的是归一化 TurnEvent（dsh/decode.ts
  * 把 DSH 的 session/event 载荷翻译成该协议），不再出现任何 DSH 事件名/载荷
@@ -9,7 +9,7 @@
  * 事件流向：DSH 的 session/event 由 index.ts 的全局监听器收到 → decode.ts
  * 归一化为 TurnEvent 序列 → 按 sessionId 路由到本 hub；hub 内同一 session
  * 同时至多一个 ActiveRun（§5.8 会话串行化保证）。agent/inbox/claimed 与
- * agent/error 仍由 index.ts 直接路由（二者载荷在 DSH 0.1.5 未变）。
+ * agent/error 仍由 index.ts 直接路由（二者载荷在 DSH 0.1.7 未变）。
  *
  * 归约语义（§5.4/§5.5/§9）：
  * - result = 本任务 turn 内全部 assistant 文本（text-delta 与 assistant-message
@@ -33,8 +33,8 @@ export interface TurnEndReasonLike {
 /**
  * 归一化 Turn 事件（decode.ts 从 DSH session/event 翻译而来，本协议自解释、
  * 与 DSH 版本解耦）：
- * - 'text-delta' / 'reasoning-delta'：assistant 流式增量（由 v3 内嵌 stream
- *   记录展开，或旧版逐 chunk 事件直译）；
+ * - 'text-delta' / 'reasoning-delta'：assistant 流式增量（由内嵌 stream
+ *   记录展开）；
  * - 'assistant-message'：一条已提交的 assistant 消息（全文 + usage）；
  * - 'turn-end'：turn 收尾（成败判定依据）。
  */
@@ -71,8 +71,6 @@ export interface RunConfig {
   onAssistantMessage?: (turn: number, text: string, usage: Record<string, unknown> | null) => void
 }
 
-const TERMINAL_END_KINDS = new Set(['completed', 'aborted', 'blocked', 'error', 'max-tokens', 'interrupted'])
-
 /** 单个活动任务的状态收集器。 */
 class ActiveRun {
   /** 消息被 driver claim 后分配的 turn 号。 */
@@ -82,8 +80,6 @@ class ActiveRun {
   collected = ''
   cancelRequested = false
   agentError: string | undefined
-  /** 消息是否已被 claim（≥1 个 user/message 或 inbox/claimed 到达）。 */
-  started = false
   /** 本 turn 是否已收到 text-delta（用于 onAssistantMessage 兜底判断）。 */
   hasTextDelta = false
 
@@ -100,7 +96,6 @@ class ActiveRun {
   onMessageClaimed(messageId: string, turn: number): void {
     if (messageId !== this.messageId) return
     this.turn = turn
-    this.started = true
   }
 
   onAgentError(error: unknown): void {
@@ -140,8 +135,8 @@ class ActiveRun {
         if (event.usage !== null) this.usage = event.usage
         if (event.text !== '') {
           this.config.onAssistantMessage?.(event.turn, event.text, this.usage)
-          // 兜底：若该消息没有伴随 text-delta（纯推理模型、流记录缺失或 DSH
-          // 版本差异），在此推送最终文本并收集到 result 中。
+          // 兜底：若该消息没有伴随 text-delta（纯推理模型、流记录缺失），
+          // 在此推送最终文本并收集到 result 中。
           if (!this.hasTextDelta) {
             this.collected += event.text
             this.config.onTextDelta?.(event.text)
@@ -349,9 +344,4 @@ export class RunHub {
       this.active.get(sessionId)?.requestCancel(reason)
     }
   }
-}
-
-/** 供测试/诊断：判断 reason.kind 是否属于已知终局集合。 */
-export function isTerminalEndKind(kind: string): boolean {
-  return TERMINAL_END_KINDS.has(kind)
 }

@@ -491,12 +491,11 @@ function projectMessages(
   const messages: Array<Record<string, unknown>> = []
   for (const event of events) {
     if (event.type === 'user/message') {
-      // DSH 0.1.5：`user/message` 事件的 data **就是 UserMessage 本身**，不是 `{ message }` 包装。
-      // 对照 DSH `session/src/index.ts` 的取法：`type === 'user/message' ? record : record.message`。
-      // 这里兼容两种形状（先探测 `.message`），避免宿主版本差异导致 user 消息被静默丢弃。
+      // DSH 0.1.5 起：`user/message` 事件的 data **就是 UserMessage 本身**，没有 `{ message }` 包装
+      // （对照 DSH `session/src/types.ts` 的 `'user/message': UserMessage`）。
+      // 插件只与同版本宿主运行，故不做双形状兜底：形状若变应当暴露，而不是静默吞掉 user 消息。
       const data = event.data as Record<string, unknown> | null | undefined
-      const message = data != null && typeof data === 'object' && 'message' in data ? data.message : data
-      const text = extractTextContent(message)
+      const text = extractTextContent(data)
       if (text !== '') {
         messages.push({
           role: 'user',

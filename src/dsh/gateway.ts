@@ -98,9 +98,9 @@ export function createSessionGateway(
 
   return {
     liveAgent(sessionId: string): BridgeAgent | undefined {
-      // live 复用必须走 agents.get：DSH 0.1.5 中 resume() 会尝试持久写句柄独占，
-      // 而 live agent 仍持有该句柄 → 直接 resume 会抛 already owned。生命周期由
-      // DSH 管理，复用方不持有 dispose（置空实现，绝不主动销毁 DSH 的 agent）。
+      // live 复用必须走 agents.get：DSH 0.1.5 起 resume() 会尝试持久写句柄独占
+      // （0.1.7 仍如此），而 live agent 仍持有该句柄 → 直接 resume 会抛 already owned。
+      // 生命周期由 DSH 管理，复用方不持有 dispose（置空实现，绝不主动销毁 DSH 的 agent）。
       const agent = ctx.agents.get(SessionId(sessionId))
       if (agent === undefined) return undefined
       return {

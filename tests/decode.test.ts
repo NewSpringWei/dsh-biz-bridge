@@ -1,5 +1,5 @@
 /**
- * session/event → TurnEvent 解码器测试（src/dsh/decode.ts，DSH 0.1.5 v3 流模型）。
+ * session/event → TurnEvent 解码器测试（src/dsh/decode.ts，DSH 0.1.7 / 会话日志 v4）。
  *
  * 验证点：assistant/message 内嵌 stream 展开为增量、全文与 usage 组装成
  * assistant-message 事件、attempt 仅产生实时增量、reasoning 与 text 顺序保持、

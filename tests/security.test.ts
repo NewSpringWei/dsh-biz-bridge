@@ -473,10 +473,12 @@ test('F12: policySection=false 时不注册段落', () => {
   assert.equal(fake.sections.length, 0)
 })
 
-test('F12: 配置 denyTools 时在 agent 作用域内限制工具', () => {
+test('F12: 配置 denyTools 时在 agent 作用域内逐名限制工具', () => {
   const fake = fakeAgentCtx()
   applyAgentSecurityPolicy(fake.target, 's', { ...BASE_SECURITY, denyTools: ['pwsh', 'web_fetch'] }, POLICY_LOGGER)
-  assert.deepEqual(fake.restrictCalls, [{ deny: ['pwsh', 'web_fetch'] }])
+  // 逐名调用：DSH 的 restrict() 对整批名字先校验后应用，一个未知名字会让整批失效；
+  // 拆成单名后，未知名字只淘汰它自己。
+  assert.deepEqual(fake.restrictCalls, [{ deny: ['pwsh'] }, { deny: ['web_fetch'] }])
 })
 
 test('F12: sandboxMode=read-only 时向该会话追加 sandbox/mode 事件', () => {
@@ -533,7 +535,7 @@ test('F12: 服务缺失或工具名未知时降级为告警，不抛错', () => 
     throwing.target, 's', { ...BASE_SECURITY, denyTools: ['nope'] },
     { info: () => undefined, warn: (m) => warnsC.push(m) },
   ))
-  assert.ok(warnsC.some(m => m.includes('restrict')), `应告警: ${warnsC.join(' | ')}`)
+  assert.ok(warnsC.some(m => m.includes('deny tool "nope"')), `应告警: ${warnsC.join(' | ')}`)
 })
 
 test('F12: security 配置缺省（schema 与 DEFAULTS 双源一致）', () => {

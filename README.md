@@ -11,7 +11,7 @@ agent 产出的文件也会被发现、登记并以签名下载接口回传。
 附件体量与完整性）与 agent 能力约束（`security.denyTools` 移除工具、`security.sandboxMode: read-only`
 拒绝写入与删除）；**读边界与容器隔离由运行时承担**——详见 [`docs/security.md`](docs/security.md)。
 
-- **当前版本**：`0.1.2`（草创/早期开发，接口可能调整，暂不建议生产关键链路）
+- **当前版本**：`0.1.3`（草创/早期开发，接口可能调整，暂不建议生产关键链路）
 - **源码即仓库根**：完整插件工程即本目录，代码随便看、随便改。
 
 ## 目录速览
@@ -26,7 +26,7 @@ agent 产出的文件也会被发现、登记并以签名下载接口回传。
 │   ├─ api.md                #   HTTP 接入（签名协议 + 接口定义 + 错误码）
 │   ├─ security.md           #   安全边界（插件负责什么 / 不负责什么 + 部署建议）
 │   └─ cordis.patch.yml      #   配置样例（直接复制到 profile 使用）
-├─ release/                  # 发布产物（dsh-biz-bridge-0.1.2.tgz + CHANGELOG）
+├─ release/                  # 发布产物（dsh-biz-bridge-0.1.3.tgz + CHANGELOG）
 ├─ tools/bundle/             # 便携部署包构建器（把 Node+DSH+pnpm+本插件打成可带走的目录）
 └─ public/static/            # 随插件分发的参考工具页（管理员/接入测试/密钥工具；接入测试页含附件双向操作）
 ```
@@ -40,7 +40,7 @@ agent 产出的文件也会被发现、登记并以签名下载接口回传。
 
 ```bash
 # A. 直接用仓库随附的发布包
-ls release/dsh-biz-bridge-0.1.2.tgz
+ls release/dsh-biz-bridge-0.1.3.tgz
 
 # B. 或自己从源码构建（产物同样写到 release/）
 pnpm install && pnpm build && npm run release    # 前提见 docs/building.md
@@ -50,7 +50,7 @@ pnpm install && pnpm build && npm run release    # 前提见 docs/building.md
 运行时核心，再装本插件）
 
 ```bash
-dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.2.tgz
+dsh plugin --profile bizbridge add ./release/dsh-biz-bridge-0.1.3.tgz
 ```
 
 **第三步 · 启动**

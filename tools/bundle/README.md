@@ -41,7 +41,7 @@ node tools/bundle/bundle.mjs --clean
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `dshVersion` | `0.1.5-rc.2` | DSH 版本 |
+| `dshVersion` | `0.1.7-rc.1` | DSH 版本 |
 | `pnpmVersion` | `10.18.0` | pnpm 版本。`dsh plugin add` 是 pnpm 转发器，缺了它装不上插件 |
 | `nodeVersion` | `24.14.0` | Node 版本。DSH 未声明 `engines`，无法自动推导 |
 | `platform` | `""` | 目标平台（`win-x64` / `linux-x64` / `linux-arm64` / `darwin-arm64`…）；留空取宿主 |

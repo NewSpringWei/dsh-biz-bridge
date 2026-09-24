@@ -311,21 +311,19 @@ test('sessionMessagesOp: 投影 user/assistant 消息（user/message 的 data �
   const events = [
     { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: '你好' }] } },
     { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'text', text: '你好，' }] }, usage: { totalTokens: 3 } } },
-    // 兼容旧的 `{ message }` 包装形状
-    { type: 'user/message', seq: 3, data: { message: { content: [{ type: 'text', text: '第二问' }] } } },
     // 非文本块不投影
-    { type: 'user/message', seq: 4, data: { content: [{ type: 'image', url: 'x' }] } },
+    { type: 'user/message', seq: 3, data: { content: [{ type: 'image', url: 'x' }] } },
   ]
   const sessionQuery = {
     readSession: async (id: string) => ({ session: { id, createdAt: 0 }, events }),
   }
   const r = await sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, { page: 1, page_size: 10 })
-  assert.equal(r.total, 3)
-  assert.deepEqual(r.messages.map(m => m.role), ['user', 'assistant', 'user'])
+  assert.equal(r.total, 2)
+  assert.deepEqual(r.messages.map(m => m.role), ['user', 'assistant'])
   assert.equal(r.messages[0]?.content, '你好')
   assert.deepEqual(r.messages[1]?.usage, { totalTokens: 3 })
   // 分页
-  const paged = await sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, { page: 2, page_size: 2 })
+  const paged = await sessionMessagesOp(sessionQuery, 'biz-a:stream:s1', ADMIN, { page: 2, page_size: 1 })
   assert.equal(paged.messages.length, 1)
 })
 

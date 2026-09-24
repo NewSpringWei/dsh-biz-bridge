@@ -652,7 +652,9 @@ dsh-biz-bridge.cmd
 第一次运行脚本会做三件事，然后启动服务：
 
 1. 把插件装进 profile（内部调用 \`dsh plugin add\`，用**绝对路径**，不涉及 \`./\` 前缀）
-2. 把 \`program/templates/cordis.patch.yml\` 播种为 profile 配置
+2. 把 \`program/templates/cordis.patch.yml\` 播种为 profile 配置（\`runtime/profiles/bizbridge/cordis.patch.yml\`）
+   —— **要改插件配置就编辑那个文件**（内网联调放开回调、denyTools、sandboxMode 等），
+   profile 补丁是**冷配置，改完需重启服务**；client 公钥不走它，见 ③
 3. 启动服务
 
 **什么都没配也能启动**：公钥表为空时全部 API 请求返回 401、只有静态页可达（fail-closed），

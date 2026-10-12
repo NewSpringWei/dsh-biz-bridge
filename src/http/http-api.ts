@@ -15,6 +15,7 @@
  *   POST …/api/v1/models            可用模型查询（provider 级失败如实上报）
  *   POST …/api/v1/admin/models      模型配置面读取（admin）
  *   POST …/api/v1/admin/models/providers 模型 provider 段写入（admin）
+ *   POST …/api/v1/sync              模型配置同步（免签名；第一方工具页触发，不接受参数）
  *   POST …/api/v1/sessions/{id}/messages  会话消息查询
  *   POST …/api/v1/callback-test/receive   回调测试接收（免签名）
  *   POST …/api/v1/callback-test/{id}      回调测试状态查询
@@ -122,6 +123,31 @@ function sanitizeBody(body: Record<string, unknown>): Record<string, unknown> {
   return out
 }
 
+/**
+ * 免签名端点的同源守卫：带 `Origin` 的跨源请求拒绝，`Sec-Fetch-Site: cross-site` 拒绝。
+ *
+ * 用途是挡浏览器侧的 CSRF（工具页 `utils.html` 在**同源**下调用 `/api/v1/sync`）。
+ * 非浏览器客户端两个头都没有——放行；该端点不接受任何参数，调用者无法注入配置。
+ */
+export function assertSameOriginRequest(headers: IncomingMessage['headers'], host: string | undefined): void {
+  const origin = headers.origin
+  if (typeof origin === 'string' && origin !== '') {
+    let originHost: string | undefined
+    try {
+      originHost = new URL(origin).host
+    } catch {
+      originHost = undefined
+    }
+    if (originHost === undefined || host === undefined || originHost !== host) {
+      throw new ForbiddenError('cross-origin request rejected')
+    }
+    return
+  }
+  if (headers['sec-fetch-site'] === 'cross-site') {
+    throw new ForbiddenError('cross-origin request rejected')
+  }
+}
+
 /** 完整处理器（注册为 /bizbridge 前缀路由）。 */
 export function createBridgeHandler(runtime: BridgeRuntime) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -132,6 +158,16 @@ export function createBridgeHandler(runtime: BridgeRuntime) {
     try {
       // 第一方参考/调试页面（GET/HEAD，免签名）
       if (serveStatic(runtime, req, res, pathname)) return
+      // 模型配置同步（**免签名**）：第一方工具页 `/static/utils.html` 的按钮触发。
+      //   安全设计：请求体不参与任何决策、源由配置固定、内容没变就不落盘——未验签调用者
+      //   只能"让服务端按配置重读一次源补丁"，无法注入模型配置或指定路径。
+      if (pathname === '/bizbridge/api/v1/sync' && req.method === 'POST') {
+        assertSameOriginRequest(req.headers, req.headers.host)
+        const outcome = await runtime.syncModels()
+        runtime.fileLogger.info('models-sync', `manual trigger → ${outcome.status}`, { reason: outcome.reason })
+        writeJson(res, 200, outcome)
+        return
+      }
       // 回调测试接收端点（免签名：scheduler 服务端 POST，不携带签名头）
       if (pathname === '/bizbridge/api/v1/callback-test/receive' && req.method === 'POST') {
         const rawBody = await readBody(req)

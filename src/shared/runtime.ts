@@ -11,6 +11,7 @@ import { RunHub } from '../core/runner.ts'
 import type { AttachmentAdmissionPort, AttachmentFetcher } from '../core/attachments.ts'
 import type { UserMessageFactory } from './types.ts'
 import type { FileLogger } from '../core/logger.ts'
+import type { ModelSyncOutcome } from '../core/models-sync.ts'
 
 /** 日志最小面（真实实现 ctx.logger）。 */
 export interface LoggerLike {
@@ -122,6 +123,11 @@ export interface BridgeRuntime {
    * settings 段供给；缺失时模型配置面只读、目录仍照常（见 core/models-config.ts）。
    */
   settings: SettingsLike | undefined
+  /**
+   * 按配置的源 profile 同步模型 provider 段（只读源、只写本 profile）。
+   * 启动时调用一次；免签名触发端点也调它（见 api.md §16）。
+   */
+  syncModels: () => Promise<ModelSyncOutcome>
   sessionQuery: SessionQueryLike | undefined
   fileLogger: FileLogger
   /** 第一方参考/调试页面静态资源（index/admin/client/utils + common.js + style.css）。 */

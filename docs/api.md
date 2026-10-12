@@ -836,6 +836,38 @@ DSH 不提供"本会话产物清单"，插件用**任务执行前后的工作目
 
 ---
 
+## 16. POST /api/v1/sync —— 模型配置同步（**免签名**）
+
+桥接 profile 是 headless：provider 目录按 profile 存，所以在 `dsh-web`（`--profile web`）里配好的
+模型，桥接进程不会自动看到。插件在**每次启动**时按配置的源 profile 读一次对方写下的补丁
+（`<DSH_HOME>/profiles/<源 profile>/cordis.patch.yml`），把 `providers` 段同步进**本 profile**；
+本接口是"web 侧刚改完、不想重启桥接"的即时刷新——第一方工具页
+`/bizbridge/static/utils.html` 的按钮调的就是它。
+
+**所需 scope**：无（**免签名**）。安全设计：
+
+- **不接受任何参数**：请求体不参与任何决策；
+- 源与命名空间由配置固定（`models.syncFromProfile` / `models.settingsNamespace`），调用者无法指定路径；
+- 内容没变**不落盘**（指纹比对），反复调用无副作用；
+- 拒绝跨源请求：带 `Origin` 且与 `Host` 不同 → 403；`Sec-Fetch-Site: cross-site` → 403。
+
+### 响应体（200）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | `applied` \| `unchanged` \| `skipped` \| `failed` | 结果分类 |
+| `reason` | string | 人类可读原因（失败时用于定位：源缺失 / 解析失败 / 含 `!!js` / 适配器拒绝） |
+| `profile` / `path` | string（可选） | 源 profile 与源文件 |
+| `routes` | string[]（可选） | 已生效的 provider 路由名 |
+| `revision` | number \| null（可选） | 写入后该条目的 settings 修订号 |
+
+**失败不清空**：源不可读、解析失败、`providers` 段为空、或段内出现 `!!js` 时一律**不写**，
+保留上一份可用集合，并如实返回 `failed` / `skipped`。
+
+> 只同步 `providers` 段。**默认模型（`agent-default-model`）不跟着同步**——那是通道自己的选择。
+
+---
+
 ## 错误码全集
 
 所有错误响应结构：`{ "error": { "code": string, "message": string, "details": object } }`

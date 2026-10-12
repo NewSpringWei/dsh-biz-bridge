@@ -150,10 +150,23 @@ scope 权限说明：
 | 键 | 缺省 | 说明 |
 |----|------|------|
 | `settingsNamespace` | `llm-pi-ai` | 承载 provider 路由的宿主条目 id（`dsh-base` 的 `llm-pi-ai` 行）。换适配器或改行 id 时同步这一项 |
+| `syncFromProfile` | `""`（不同步） | **启动时**从哪个 profile 同步 provider 段。用 `dsh-web` 配模型的部署写 `web`（那个启动器就是 `--profile web`）；留空 = 自己显式配 |
 
 桥接 profile 默认只有 `dsh-base` 挂的 `llm-deepseek` 默认路由。要用**别的模型**（例如在 dsh-web
-里配过的小米 / 智谱 / 通义），必须把 provider 段配进**本 profile**——provider 目录是 **profile 级**的，
-只有凭据是 runtime 级共享（`<DSH_HOME>/.credentials.yaml`）：
+里配过的小米 / 智谱 / 通义），两条路选一条——**provider 目录是 profile 级**的，只有凭据是
+runtime 级共享（`<DSH_HOME>/.credentials.yaml`）：
+
+**① 跟着 web 走（推荐）**：设 `models.syncFromProfile: web`。插件在**每次启动**读
+`<DSH_HOME>/profiles/web/cordis.patch.yml` 的 `providers` 段并同步进本 profile（经宿主 `settings`
+服务，与 dsh-web 的 Models 页同一条写入路径）。web 里改完模型后：
+
+- 重启桥接 → 自动同步；或
+- 打开免验签工具页 `http://<host>:42731/bizbridge/static/utils.html` → 「立即同步模型配置」（调 `POST /api/v1/sync`，见 api.md §16）。
+
+只同步 `providers` 段；**默认模型不动**。源不可读 / 解析失败 / 段为空 / 段内含 `!!js` →
+**不写、保留上一份**并告警（一个笔误不该把所有人锁在门外）。
+
+**② 自己显式配**（不跟随 web）：`syncFromProfile` 留空，把 provider 段写进本 profile：
 
 ```jsonc
 // POST /bizbridge/api/v1/admin/models/providers（admin scope 签名；providers 即完整集合）
@@ -164,13 +177,16 @@ scope 权限说明：
 }
 ```
 
-也可以把同一段直接写进本 profile 的 `cordis.patch.yml`（`- id: llm-pi-ai` + `config.providers`）——
-两条路落在**同一个** settings 文档上。读接口（api.md §15.1）会告诉你那份文件是哪个、当前生效值是什么。
+或直接写进本 profile 的 `cordis.patch.yml`（`- id: llm-pi-ai` + `config.providers`）。
+读接口（api.md §15.1）会告诉你那份文件是哪个、当前生效值是什么。
 
 启动日志有一行 `模型目录：N 个 provider、M 个模型 — …`；只注册了默认 provider 时会额外提示。
 **配错作用域过去是完全静默的**：目录只是少一个 provider、没有任何提示。
 
 > **可用性**：目录只证明"注册了"。账户欠费、配额用尽仍会照常列出，需调用侧探测。
+>
+> ⚠️ 开了同步后，本 profile 的 `llm-pi-ai` providers 段就是**派生**的——用管理面接口或手写改的那份
+> 会在下一次同步（启动或手动触发）被覆盖；要保留自己的集合就别开同步。
 
 ### security（agent 侧安全策略）
 

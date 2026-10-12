@@ -22,6 +22,7 @@
   <aside class="sidebar">
     <div class="sidebar-title">工具</div>
     <a href="#sec-keygen" class="active">密钥对生成</a>
+    <a href="#sec-sync">模型配置同步</a>
     <a href="#sec-time">时间转换</a>
     <a href="#sec-api">API 说明</a>
   </aside>
@@ -50,6 +51,19 @@
         </div>
       </div>
       <p class="msg" id="genMsg"></p>
+    </section>
+
+    <section class="panel" id="sec-sync">
+      <h2>模型配置同步（本地）</h2>
+      <p class="msg">在 <code>dsh-web</code> 里配好模型后，桥接进程<b>不会自动看到</b>——provider 目录按 profile 存，
+      两个 profile 是两个进程。这里按部署配置的源 profile（<code>models.syncFromProfile</code>）重读一次，
+      立即生效、<b>无需重启</b>。启动时已经自动同步过一次，本按钮用于"web 侧刚改完"的即时刷新。</p>
+      <p class="msg">本页<b>免验签</b>，但该动作<b>不接受任何参数</b>：只能按配置重读同一个源补丁，
+      内容没变就不落盘；未配置源时不产生任何写入。</p>
+      <div class="row">
+        <button id="btnSync" class="primary">立即同步模型配置</button>
+      </div>
+      <pre class="view" id="syncOut" style="margin-top:10px">点击按钮开始…</pre>
     </section>
 
     <section class="panel" id="sec-time">
@@ -89,6 +103,7 @@
           <tr><td><code>POST /sessions/{id}/messages</code></td><td>admin</td><td>会话消息查询（读 DSH session 事件流；需注入 sessionQuery 服务，否则 501）。</td></tr>
           <tr><td><code>POST /callback-test/receive</code></td><td>仅插件调度器（内部令牌）</td><td><b>调试设施</b>：内存 30 分钟 TTL。回调用任务的 callback_url 指向它即可在页面追踪回调到达。仅接受本插件调度器的投递，外部写入一律 403。</td></tr>
           <tr><td><code>POST /callback-test/{id}</code></td><td>admin / 该任务所属 client</td><td>查询回调是否已到达测试接收器；<b>禁止跨 client 查询</b>。</td></tr>
+          <tr><td><code>POST /sync</code></td><td><b>免签名</b>（本页按钮）</td><td>按配置的源 profile 重读 provider 段并同步进本 profile；不接受任何参数，内容没变不落盘，拒绝跨源请求。</td></tr>
         </tbody>
       </table>
       <p class="msg" style="margin-top:8px">静态页与更完整的协议细节见 <code>code/docs/api.md</code> 与设计文档 <code>docs/dsh-biz-bridge-design.md</code> §6。</p>
@@ -123,6 +138,21 @@
   $('copyPrivate').onclick = async function () {
     var ok = await B.copyText($('genPrivate').value)
     msg(ok ? '私钥已复制' : '请先生成密钥对', ok ? 'ok' : 'err')
+  }
+
+  $('btnSync').onclick = async function () {
+    var out = $('syncOut')
+    out.textContent = '同步中…'
+    try {
+      // 免签名端点：不带 body（服务端不接受任何参数），同源调用。
+      var r = await fetch('/bizbridge/api/v1/sync', { method: 'POST' })
+      var data = await r.json()
+      out.textContent = JSON.stringify(data, null, 2)
+      out.className = 'view' + (data && data.status === 'applied' ? '' : ' err')
+    } catch (e) {
+      out.textContent = '同步失败：' + e.message
+      out.className = 'view err'
+    }
   }
 
   $('btnToIso').onclick = function () {

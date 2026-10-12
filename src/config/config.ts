@@ -58,6 +58,13 @@ export interface ResolvedConfig {
      * （`POST /api/v1/admin/models/providers`）；改名或换适配器时改这一项即可。
      */
     settingsNamespace: string
+    /**
+     * 启动时从中同步 provider 段的源 profile 名（空 = 不同步，默认）。
+     *
+     * 部署形态决定它是什么：便携包用 `dsh-web.cmd`（`--profile web`）配模型，故那里应设 `web`；
+     * 开发机上配模型的是 `desktop`。**必须显式给出**——猜错会让你以为同步生效了。
+     */
+    syncFromProfile: string
   }
   /** agent 侧安全策略（§6.4.7）：在桥接会话自己的作用域内生效。 */
   security: {
@@ -136,7 +143,7 @@ export const DEFAULTS = {
     retryInterval: 30,
   },
   http: { sseKeepalive: 15 },
-  models: { settingsNamespace: 'llm-pi-ai' },
+  models: { settingsNamespace: 'llm-pi-ai', syncFromProfile: '' },
   security: {
     policySection: true,
     denyTools: [],
@@ -279,9 +286,18 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     throw new Error('dsh-biz-bridge: config http.sseKeepalive must be a positive safe integer')
   }
 
-  const models = { settingsNamespace: input.models?.settingsNamespace ?? DEFAULTS.models.settingsNamespace }
+  const models = {
+    settingsNamespace: input.models?.settingsNamespace ?? DEFAULTS.models.settingsNamespace,
+    syncFromProfile: input.models?.syncFromProfile ?? DEFAULTS.models.syncFromProfile,
+  }
   if (typeof models.settingsNamespace !== 'string' || models.settingsNamespace.trim() === '') {
     throw new Error('dsh-biz-bridge: config models.settingsNamespace must be a non-empty string')
+  }
+  if (typeof models.syncFromProfile !== 'string') {
+    throw new Error('dsh-biz-bridge: config models.syncFromProfile must be a string (empty disables syncing)')
+  }
+  if (models.syncFromProfile !== '' && !/^[A-Za-z0-9._-]+$/.test(models.syncFromProfile)) {
+    throw new Error('dsh-biz-bridge: config models.syncFromProfile must be a profile name (letters/digits/._-) or empty')
   }
 
   const securityRaw = input.security ?? {}

@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { NonceCache, SignatureVerifier } from './core/auth.ts'
 import { fingerprint, loadClients, seedFromComposition } from './core/clients-store.ts'
@@ -40,6 +41,7 @@ import { CallbackScheduler } from './core/scheduler.ts'
 import { FileLogger } from './core/logger.ts'
 import { decodeSessionEvent, type SessionEventLike } from './dsh/gateway.ts'
 import { modelCatalogSummary } from './core/models-config.ts'
+import { syncModelProviders, type ModelSyncOutcome, type ModelSyncSource, type ModelSyncState } from './core/models-sync.ts'
 
 /** 配置 schema 的 TS 接口（设计 §8.1 的扁平形态）。 */
 export interface Config {
@@ -85,7 +87,9 @@ export const Config: z<Config> = z.object({
   models: z.object({
     // 承载 provider 路由的宿主条目 id（dsh-base 的 llm-pi-ai 行）；见 config.ts 同名注释
     settingsNamespace: z.string().default('llm-pi-ai'),
-  }).default({ settingsNamespace: 'llm-pi-ai' }),
+    // 启动时同步 provider 段的源 profile 名（空 = 不同步）；便携包设 'web'
+    syncFromProfile: z.string().default(''),
+  }).default({ settingsNamespace: 'llm-pi-ai', syncFromProfile: '' }),
   security: z.object({
     policySection: z.boolean().default(true),
     denyTools: z.array(z.string()).default([]),
@@ -206,7 +210,24 @@ export function apply(ctx: Context, rawConfig: Config): void {
   const verifier = new SignatureVerifier(initialClients.clients, config.auth.timestampWindow)
   const nonceSeen = new NonceCache(config.auth.nonceCacheSize, config.auth.timestampWindow)
 
-  // 5. 调度器（§7）
+  // 5. 跨 profile 模型同步（models.syncFromProfile）：启动时必须检查一次。
+  //    两个 profile 是两个进程、没有 IPC——唯一通道是读对方的补丁文件；只读源、只写本 profile，
+  //    失败保留上一份可用集合（见 core/models-sync.ts）。
+  const syncState: ModelSyncState = {}
+  const syncSource = resolveModelSyncSource(ctx, config.models.syncFromProfile)
+  const runModelSync = (): Promise<ModelSyncOutcome> => syncModelProviders({
+    settings: ctx.get('settings'),
+    namespace: config.models.settingsNamespace,
+    source: syncSource,
+    state: syncState,
+    log: (level, message) => (level === 'warn' ? logger.warn(message) : say(message)),
+  })
+  if (config.models.syncFromProfile !== '' && syncSource === undefined) {
+    say(`警告：models.syncFromProfile=${config.models.syncFromProfile} 已配置，`
+      + '但当前进程没有 profileContext（不是 dsh 启动的 profile），无法定位源补丁——本次不同步')
+  }
+
+  // 6. 调度器（§7）
   const runtime = {
     config,
     db,
@@ -231,6 +252,7 @@ export function apply(ctx: Context, rawConfig: Config): void {
     // 配置面：provider 路由由本 profile 的 settings 段供给（models.settingsNamespace）。
     // 非强依赖——缺失时模型配置面只读，模型目录照常。
     settings: ctx.get('settings'),
+    syncModels: () => runModelSync(),
     sessionQuery: ctx.get('sessionQuery'),
     fileLogger,
     staticFiles: loadStaticFiles((message) => logger.info(message)),
@@ -257,7 +279,17 @@ export function apply(ctx: Context, rawConfig: Config): void {
   if (config.security.denyTools.length > 0) {
     say(`安全策略：桥接会话禁用工具 ${config.security.denyTools.join(', ')}`)
   }
-  // 5d. 模型目录可见性（§6.5）：headless profile 的 provider 来自**本 profile** 的 settings 段，
+  // 5d. 启动时同步模型配置（必须做的检查）：失败只告警，绝不清空目录。
+  void runModelSync().then((outcome) => {
+    if (outcome.status === 'failed') {
+      logger.warn(`模型配置同步失败：${outcome.reason}（保留上一份可用集合）`)
+    } else if (outcome.status === 'skipped' && syncSource !== undefined) {
+      logger.info(`模型配置未同步：${outcome.reason}`)
+    }
+  }).catch((error: unknown) => {
+    logger.warn(`模型配置同步异常：${error instanceof Error ? error.message : String(error)}`)
+  })
+  // 5e. 模型目录可见性（§6.5）：headless profile 的 provider 来自**本 profile** 的 settings 段，
   //     配错作用域时目录只表现为"少一个 provider"、毫无提示——启动日志是唯一一定有人看的地方。
   //     延迟一拍：provider 行由各自的插件注册，可能晚于本插件激活。
   ctx.effect(() => {
@@ -385,8 +417,23 @@ export function apply(ctx: Context, rawConfig: Config): void {
   fileLogger.info('startup', 'plugin activated')
 }
 
-/** 日志脱敏（不打印公钥/私钥等）。 */
-function skipSecrets(config: ResolvedConfig): Record<string, unknown> {
+/**
+ * 解析模型同步源：`<DSH_HOME>/profiles/<profile>/cordis.patch.yml`
+ * （profile 目录布局与补丁文件名由 dsh 启动器固定，见 app-boot 的 `profile.ts`）。
+ *
+ * `profileContext` 只在 dsh 启动的 profile 里存在；缺失时（单测、被嵌入）无法定位源，
+ * 返回 undefined 而不是猜一个路径。
+ */
+function resolveModelSyncSource(ctx: Context, profileName: string): ModelSyncSource | undefined {
+  if (profileName === '') return undefined
+  const profileContext = ctx.get('profileContext') as { home?: unknown } | undefined
+  const home = profileContext?.home
+  if (typeof home !== 'string' || home === '') return undefined
+  const path = join(home, 'profiles', profileName, 'cordis.patch.yml')
+  return { profile: profileName, path, read: async () => await readFile(path, 'utf8') }
+}
+
+/** 日志脱敏（不打印公钥/私钥等）。 */function skipSecrets(config: ResolvedConfig): Record<string, unknown> {
   return {
     ...config,
     auth: {

@@ -55,11 +55,14 @@
 
 # 2b) 其它模型（可选）—— provider 目录是 **profile 级**的：在 dsh-web 里配的模型不会自动出现在
 #     桥接进程里（本包的 dsh-web 与桥接是两个 profile；共享的只有 API Key 那类凭据）。
-#     要用别的模型，就把 provider 段写在这里——与 dsh-web 的 Models 页写的是**同一种** settings 文档；
-#     也可以在运行后用管理面接口写入（POST /bizbridge/api/v1/admin/models/providers，见 code/docs/api.md §15）。
+#     两条路选一条：
 #
-#     下面是被注释的样例：apiKeyEnv 是**环境变量名**，key 本身仍只放
-#     <包根>/runtime/.credentials.yaml（用 dsh-web.cmd 填，别手改）。
+#     (a) **跟着 web 走**（推荐，本模板已启用）：下面插件配置里的
+#         models.syncFromProfile: web 会在**每次启动**读 dsh-web（--profile web）写下的
+#         provider 段并同步进本 profile；dsh-web 里改完模型后运行服务即生效，
+#         也可在免验签工具页 http://127.0.0.1:42731/bizbridge/static/utils.html 点按钮立即同步。
+#         只同步 provider 段，**默认模型（agent-default-model）不动**。
+#     (b) **自己显式配**（不跟随 web）：把 syncFromProfile 留空，改用下面这段：
 #
 # - id: llm-pi-ai
 #   config:
@@ -102,9 +105,11 @@
       maxRetry: 3
       retryInterval: 30
 
-    # 模型面：承载 provider 路由的宿主条目 id（默认就是 dsh-base 的 llm-pi-ai 行，通常不用改）
-    # models:
-    #   settingsNamespace: llm-pi-ai
+    # 模型面：承载 provider 路由的宿主条目 id（默认即 dsh-base 的 llm-pi-ai 行，通常不用改）。
+    # syncFromProfile：启动时从哪个 profile 同步 provider 段。本包的模型由 dsh-web.cmd 配置，
+    # 而那个启动器用的就是 `--profile web`，故这里写 web；不需要同步就留空字符串。
+    models:
+      syncFromProfile: web
 
     # agent 侧安全约束：业务系统转发的 prompt 与附件一律按不可信输入处理
     security:

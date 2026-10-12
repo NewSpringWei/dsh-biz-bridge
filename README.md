@@ -71,9 +71,9 @@ dsh --profile bizbridge
 └─ <clientId>.pem        该 client 的公钥（整段原文）
 ```
 
-公钥从哪来：打开 `http://127.0.0.1:42731/bizbridge/static/utils.html`（工具页无需认证、
-纯本地运算、不发任何网络请求）生成密钥对，把它给出的**公钥**存成
-`clients/<clientId>.pem`，并在 `clients.json` 里登记一行。
+公钥从哪来：打开 `http://127.0.0.1:42731/bizbridge/static/utils.html`（工具页**无需认证**；密钥对在浏览器
+本地生成、不上传；该页另一个按钮「立即同步模型配置」会向本机发一次同步请求）生成密钥对，把它给出的
+**公钥**存成 `clients/<clientId>.pem`，并在 `clients.json` 里登记一行。
 
 未配任何 client 时服务照常启动，但**所有 API 请求返回 401、只有静态页可达**（fail-closed），
 所以先跑起来是安全的。
@@ -84,6 +84,11 @@ dsh --profile bizbridge
 跑一次 stream / callback。附件也能在这页直接试：表单里「添加附件」填 URI，
 或点「填入本机示例」用插件自己的静态页当 file 附件；入站回执与产物清单都带「下载」按钮
 （走签名下载接口）。
+
+> **模型不止默认那两个？** 桥接 profile 是 headless，provider 目录按 profile 存：在 `dsh-web`
+> （`--profile web`）里配的模型，桥接**每次启动会自动同步**过来（`models.syncFromProfile: web`）；
+> 改完不想重启，就用工具页的「立即同步模型配置」。只同步 provider 段，**默认模型不动**。
+> 字段与两种模式（跟随 web / 自己显式配）见 [`docs/config.md`](docs/config.md) 的 `### models`。
 
 > 字段与降级语义（解析失败保留上一份、`enabled:false` 即停用）见
 > [`docs/config.md`](docs/config.md) 的 §auth。

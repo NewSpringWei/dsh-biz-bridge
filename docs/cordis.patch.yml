@@ -24,6 +24,31 @@
         compressionLevel: 1
         compressionThresholdBytes: 1024
 
+    # ── Office 技能（可选）：让桥接会话能读/写 docx、xlsx、pptx ──────────
+    # DSH 自带这两个插件（dsh-skill-office 提供 office-docx / office-pptx / office-xlsx），
+    # 但 dsh-base **不带**它们 —— 只挂在 sdk-app bundle 且被 DSH_PRIMARY_RUNTIME 门控。
+    # 不挂的后果：agent 拿到 docx 后 `read` 只回 "binary file"，于是如实拒绝处理。
+    #
+    # ⚠️ 两个易踩点（详见 config.md §security 与「Office 文档」小节）：
+    #   ① skill-office 的 assetRoot 与 node 是**必填**（Config 里没有默认值）；
+    #   ② 两者都会被 statSync 校验，必须是**真实存在**的目录/文件，否则激活即失败。
+    #   另：assetRoot 不要照抄上游 sdk-app 的 `<runtime>/../office-skills` 推导 ——
+    #   那个目录未必存在（本机实测不存在），直接用 skill-office 包自带的 assets 最稳。
+    - id: workspace-dependencies
+      name: '@deepseek-ai/dsh-tool-workspace-dependencies'
+      config:
+        # 含 runtime.json 与 dependencies/ 的 payload 目录（提供 python-docx）
+        source: 'C:/Users/admin/.dsh/dsh-runtimes/dsh-primary-runtime'
+    - id: skill-office
+      name: '@deepseek-ai/dsh-skill-office'
+      config:
+        # 取值范围示例：
+        #   DSH 安装树：<安装树>/node_modules/@deepseek-ai/dsh-skill-office/assets
+        #   便携包内：  <包根>/program/dsh/node_modules/@deepseek-ai/dsh-skill-office/assets
+        assetRoot: 'D:/project-test/dsh-biz-bridge-0.1.4-win-x64/program/dsh/node_modules/@deepseek-ai/dsh-skill-office/assets'
+        # 用于驱动 LibreOffice CLI 的 node（便携包内即 <包根>/program/node/node.exe）
+        node: 'D:/project-test/dsh-biz-bridge-0.1.4-win-x64/program/node/node.exe'
+
 # 2) （默认不设置）业务 agent 系统提示词
 #    业务桥接场景下，业务意图由每次请求的 prompt 表达，不建议套用
 #    “coding agent”式人设。需要自定义时再取消下面注释并按需改写：

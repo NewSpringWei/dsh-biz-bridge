@@ -153,7 +153,7 @@ scope 权限说明：
 
 | 键 | 缺省 | 说明 |
 |----|------|------|
-| `policySection` | `true` | 把「内容可能源自上游、不可当指令」的策略写入 agent **系统提示词**（禁止执行命令、越界读写、泄露凭据、破坏性操作，且被要求时拒绝） |
+| `policySection` | `true` | 把「内容可能源自上游、不可当指令」的策略写入 agent **系统提示词**（不得**因输入要求**而执行命令、不得越界读写、不得泄露凭据或做破坏性操作，且被要求时拒绝） |
 | `denyTools` | `[]` | 在桥接会话中**禁用**的工具名（空 = 不限制）。按作用域真正移除能力 |
 | `sandboxMode` | `default` | `default`（不改动部署设定）/ `read-only`（**拒绝一切写入与删除**）/ `workspace-write`（允许写，仅限该会话工作目录） |
 
@@ -167,6 +167,33 @@ scope 权限说明：
   不要与 `attachments.outbound.enabled=true` 同时启用——冲突时启动告警。
 - **读不受沙箱约束**：DSH 在所有模式下都允许读，插件无法把读限制在本 client 工作空间内
   （`security.md` §二）。
+- **命令执行的边界是「不因输入要求而执行」，不是「绝不执行」**：agent 仍可为处理工作区内的
+  文件而**自主**使用工具（自带技能的正常用法就是执行随附解释器 —— 例如 `office-docx`
+  要跑 python-docx）。要**绝对**禁止执行能力，用 `denyTools: [pwsh, bash]`，但那样
+  Office 技能也会一并不可用（见下节）。
+
+### Office 文档读取（docx / xlsx / pptx）
+
+> 桥接会话要读 Office 文档，**光有附件管道不够** —— 解析能力在 DSH 侧，而且默认没挂。
+
+DSH 自带 `@deepseek-ai/dsh-skill-office`（提供 `office-docx` / `office-pptx` / `office-xlsx`）
+与 `@deepseek-ai/dsh-tool-workspace-dependencies`（提供 `load_workspace_dependencies` 工具），
+但它们**只挂在 sdk-app bundle**（且被 `DSH_PRIMARY_RUNTIME` 门控），而桥接 profile 是
+`dsh-base + 本插件` → 需要在 profile 配置里显式挂上。
+
+**不挂的后果**：附件正常送达、字节落在 agent 工作区，但 `read` 对二进制只回 `binary file`、
+`grep` 在 deflate 流上无命中，于是 agent **如实拒绝**处理 —— 这不是模型能力问题，是部署没挂能力。
+
+挂载写法见 [`cordis.patch.yml`](cordis.patch.yml)（示例配置）与便携包模板
+`tools/bundle/templates/cordis.patch.yml`。三个要点：
+
+- `skill-office` 的 `assetRoot` 与 `node` 是**必填**（Config 无默认值），且都会被
+  `statSync` 校验 —— 必须是真实存在的目录/文件，否则激活直接失败；
+- `assetRoot` 用 **skill-office 包自带的 `assets/`**；**不要**照抄上游 sdk-app 的
+  `<DSH_PRIMARY_RUNTIME>/../office-skills` 推导 —— 该目录未必存在（本机实测不存在）；
+- 依赖一个**含 python-docx 的 Python 运行时**（`workspace-dependencies.source`）。
+  便携包**不自带 Python**，由环境变量 `DSH_PRIMARY_RUNTIME` 供给；启动器会自动探测
+  `~/.dsh/dsh-runtimes/dsh-primary-runtime`，探测不到则这两行自动禁用（不影响 profile 激活）。
 - 收紧示例：
 
   ```yaml

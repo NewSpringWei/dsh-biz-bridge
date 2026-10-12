@@ -19,6 +19,32 @@
         compressionLevel: 1
         compressionThresholdBytes: 1024
 
+    # ── Office 技能（可选）：让桥接会话能读/写 docx、xlsx、pptx ──────────
+    # DSH 自带这两个插件（dsh-skill-office 提供 office-docx / office-pptx / office-xlsx），
+    # 但它们默认只挂在 sdk-app bundle；桥接 profile = dsh-base + 本插件，需在此显式挂上。
+    # 不挂的后果：agent 拿到 docx 后 `read` 只回 "binary file"，会如实拒绝处理。
+    #
+    # 它们依赖一个含 Python（python-docx）的运行时；**本包不自带 Python**，由环境变量
+    # DSH_PRIMARY_RUNTIME 供给 —— 启动器会探测 ~/.dsh/dsh-runtimes/dsh-primary-runtime，
+    # 探测不到就不设该变量，下面两行随之禁用（不影响 profile 正常激活）。
+    - id: workspace-dependencies
+      name: '@deepseek-ai/dsh-tool-workspace-dependencies'
+      disabled: !!js "!process.env.DSH_PRIMARY_RUNTIME"
+      config:
+        # 含 runtime.json 与 dependencies/ 的 payload 目录
+        source: !!js "process.getBuiltinModule('node:path').resolve(process.env.DSH_PRIMARY_RUNTIME)"
+    - id: skill-office
+      name: '@deepseek-ai/dsh-skill-office'
+      disabled: !!js "!process.env.DSH_PRIMARY_RUNTIME"
+      config:
+        # 技能资源用**本包自带**那份（含 scripts/check_office.py）。
+        # 推导依据：process.execPath = <包根>/program/node/node.exe，
+        # 故 '../../dsh/...' 即 <包根>/program/dsh/node_modules/...
+        assetRoot: !!js "process.getBuiltinModule('node:path').resolve(process.execPath, '../../dsh/node_modules/@deepseek-ai/dsh-skill-office/assets')"
+        # 驱动 LibreOffice CLI 的 Node —— 用本包自带的 node
+        node: !!js "process.execPath"
+        # cli 省略：默认解析到本包内的 @deepseek-ai/libreoffice-kit/lib/cli.js
+
 # 2) LLM 默认模型 —— 独立部署必须配，否则每个 agent 轮次都失败
 #    现象：服务能启动、接口全正常，但请求报 has no provider/model。
 #    本节覆盖 dsh-base 自带的 agent-default-model 行。

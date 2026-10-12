@@ -397,6 +397,13 @@ for (const f of readdirSync(templateDir)) {
   cpSync(join(templateDir, f), join(outDir, 'program/templates', f))
   log(`模板   → program/templates/${f}`)
 }
+
+// 运维脚本另放一份到**包根**，与启动器并列：运维要能一眼看到、直接双击运行。
+// 只放 Windows 目标 —— 这个 ACL 前提是 Windows 特有的，放到别的平台只会让运维猜。
+for (const f of cfg.platform.startsWith('win') ? ['fix-sandbox-acl.cmd', 'fix-sandbox-acl.ps1'] : []) {
+  cpSync(join(templateDir, f), join(outDir, f))
+  log(`运维   → ${f}`)
+}
 writeText(join(outDir, 'runtime/README.txt'), `本目录是数据根：DSH_HOME 与插件的 runtime.path 同指此处。
 首次启动前只有本文件；其余目录由启动脚本与首次运行生成。
 
@@ -443,6 +450,14 @@ set "NODE=%ROOT%program\node\node.exe"
 set "CLI=%ROOT%program\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js"
 set "PROFILE=bizbridge"
 set "PROFDIR=%ROOT%runtime\profiles\%PROFILE%"
+
+rem ---- optional: a runtime that ships Python, for the Office skills --------
+rem dsh-skill-office needs a Python with python-docx, which this bundle does not
+rem carry. Probe the standard DSH runtime location; when it is absent the
+rem variable stays unset, which disables the Office skill rows in the profile
+rem config (they are gated on this variable) instead of failing activation.
+if not defined DSH_PRIMARY_RUNTIME if exist "%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\runtime.json" set "DSH_PRIMARY_RUNTIME=%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime"
+if defined DSH_PRIMARY_RUNTIME echo [bizbridge] office skills runtime: %DSH_PRIMARY_RUNTIME%
 
 rem ---- with arguments: pass straight through to dsh --------------------
 if not "%~1"=="" (
@@ -506,6 +521,7 @@ if defined SEED_CFG (
   echo [bizbridge]   set webServer port in it; add clients under runtime\clients\
 )
 echo [bizbridge] starting ...
+echo [bizbridge]   if agent tool calls fail, run fix-sandbox-acl.cmd
 "%NODE%" "%CLI%" --profile %PROFILE%
 exit /b %ERRORLEVEL%
 `, { crlf: true })
@@ -523,6 +539,17 @@ NODE="$ROOT/program/node/bin/node"
 CLI="$ROOT/program/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
 PROFILE=bizbridge
 PROFDIR="$ROOT/runtime/profiles/$PROFILE"
+
+# 可选：含 Python（python-docx）的运行时，供 Office 技能使用 —— 本包不自带 Python。
+# 探测标准位置；不存在时该变量保持未设，profile 配置里的 Office 技能两行随之禁用，
+# 而不是让 profile 激活失败。
+if [ -z "$DSH_PRIMARY_RUNTIME" ] && [ -f "$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/runtime.json" ]; then
+  DSH_PRIMARY_RUNTIME="$HOME/.dsh/dsh-runtimes/dsh-primary-runtime"
+  export DSH_PRIMARY_RUNTIME
+fi
+if [ -n "$DSH_PRIMARY_RUNTIME" ]; then
+  echo "[bizbridge] office skills runtime: $DSH_PRIMARY_RUNTIME"
+fi
 
 if [ "$#" -gt 0 ]; then
   exec "$NODE" "$CLI" "$@"
@@ -697,6 +724,46 @@ runtime/clients/<clientId>.pem   该 client 的公钥（整段原文粘贴）
 
 > 字段与格式说明见 \`runtime/README.txt\`（JSON 本身写不了注释）。
 > \`enabled: false\` 即停用该 client，不必删文件。
+
+### ④ 读 Office 文档（可选）
+
+桥接会话要读 \`.docx\` / \`.xlsx\` / \`.pptx\`，需要 DSH 自带的 Office 技能 —— 它默认只挂在
+sdk-app bundle，**本包的 profile 模板已经挂上**；但它依赖一个**含 Python（python-docx）的运行时**，
+而本包不自带 Python。
+
+启动器会自动探测 \`%USERPROFILE%\\.dsh\\dsh-runtimes\\dsh-primary-runtime\`，找到就自动启用；
+找不到则该能力保持关闭，**不影响正常启动**（表现为 agent 拿到 docx 后如实说明读不了）。
+
+要指定别的运行时，启动前设环境变量即可：
+
+\`\`\`bash
+set DSH_PRIMARY_RUNTIME=D:\\path\\to\\primary-runtime
+dsh-biz-bridge.cmd
+\`\`\`
+
+### ⑤ 如果 agent 无法执行命令（Windows 权限）
+
+**现象**：agent 说它起不了 \`pwsh\` / \`bash\`，报类似
+
+\`\`\`text
+Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(<...>\\workspace\\<clientId>)
+\`\`\`
+
+**原因**：DSH 的沙箱要为每个会话工作区**同时**设置所有者与权限，而在**盘根下新建的目录**
+默认只把"完全控制"给管理员组 —— 以普通身份运行的 DSH 拿不到"改所有者"这一项，于是授权失败。
+
+**这不是本包的问题**：同一台机器上、放在用户目录里的 DSH 不受影响；放在别处的源码运行同样会撞。
+
+**处理**：跑一次随包脚本即可（**不需要管理员权限**，会打印回滚命令）
+
+\`\`\`bash
+fix-sandbox-acl.cmd            :: 只检测，不改动任何东西
+fix-sandbox-acl.cmd --fix      :: 应用授权；然后重启本服务
+\`\`\`
+
+> **更省事的做法**：把本包放在**用户目录**下（如 \`C:\\Users\\<你>\\dsh-biz-bridge\\\`）——
+> 那里的目录默认就带这项权限，一步都不用修。只有放在盘根（\`D:\\\`）或
+> \`C:\\Program Files\\\` 这类位置时才需要上面的处理。
 
 ### 需要手工执行 dsh 时（技术人员）
 

@@ -18,8 +18,8 @@ pnpm install && pnpm build && npm run release   # 出插件 tgz（release/ 下�
 # 改 tools/bundle/bundle.config.json —— 至少确认 dshVersion / pnpmVersion / nodeVersion / platform
 node tools/bundle/bundle.mjs                    # 组装（联网：下载 Node + 安装 DSH）
 
-node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.3-win-x64   # 交付前自检
-tar -a -cf dist/dsh-biz-bridge-0.1.3-win-x64.zip -C dist dsh-biz-bridge-0.1.3-win-x64
+node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.4-win-x64   # 交付前自检
+tar -a -cf dist/dsh-biz-bridge-0.1.4-win-x64.zip -C dist dsh-biz-bridge-0.1.4-win-x64
 ```
 
 > 末条把 zip 写进 `dist/`（已被 gitignore）。若写在仓库根，`*.zip` 并不在忽略列表里，
@@ -41,7 +41,7 @@ node tools/bundle/bundle.mjs --clean
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `dshVersion` | `0.1.7-rc.2` | DSH 版本 |
+| `dshVersion` | `0.2.0-rc.2` | DSH 版本 |
 | `pnpmVersion` | `10.18.0` | pnpm 版本。`dsh plugin add` 是 pnpm 转发器，缺了它装不上插件 |
 | `nodeVersion` | `24.14.0` | Node 版本。DSH 未声明 `engines`，无法自动推导 |
 | `platform` | `""` | 目标平台（`win-x64` / `linux-x64` / `linux-arm64` / `darwin-arm64`…）；留空取宿主 |
@@ -75,10 +75,17 @@ dsh-biz-bridge-<插件版本>-<平台>/
 │  └─ README.txt               目录说明；首启后长出 clients/ data/ logs/ profiles/…
 ├─ dsh-biz-bridge.cmd / .sh    启动桥服务（一键：自行完成首次安装 / 升级重装 / 配置播种）
 ├─ dsh-web.cmd / .sh           启动包内 dsh web（配模型与凭据用，端口 42730）
+├─ fix-sandbox-acl.cmd / .ps1  运维脚本（仅 Windows 目标）：修 DSH 沙箱拿不到工作区权限的问题
 ├─ readme.md                   给运维的手册
 ├─ VERSION                     插件 / DSH / pnpm / Node / 平台 / 构建时间
 └─ MANIFEST.sha256             全树哈希，供现场校验
 ```
+
+> `fix-sandbox-acl.*` 来自 `templates/`（构建时同时复制到包根与 `program/templates/`，只对 Windows 目标放）。
+> 它解决的是**环境前提**而非本包缺陷：盘根下新建的目录默认只把「完全控制」给管理员组，非提权的
+> DSH 因此无法为会话工作区设置所有者 → agent 连 `pwsh` 都起不来（Office 技能随之失效）。
+> 无参数只检测，`--fix` 才加授权（不需要管理员，且打印回滚命令）。
+> 放到**用户目录**下的包默认就有该权限，无需此脚本。
 
 产物只带运行期的**骨架与说明**：`clients/`（client 公钥表）、`profiles/`、`data/`、`logs/`、
 `workspace/`、`settings.yaml`、`.credentials.yaml` 都在首启后生成。
@@ -94,7 +101,7 @@ dsh-biz-bridge-<插件版本>-<平台>/
 `data/` `logs/` 等——该目录**不再是干净交付物**，而且看不出区别。
 
 ```bash
-node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.3-win-x64
+node tools/bundle/bundle.mjs --check dist/dsh-biz-bridge-0.1.4-win-x64
 ```
 
 通过则回显 `✓`、退出码 0；被污染则列出多余项、退出码 1。**验收请在副本上做。**

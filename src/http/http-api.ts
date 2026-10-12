@@ -12,6 +12,9 @@
  *   POST …/api/v1/tasks/{id}/redeliver 再次触发回调（重新投递，仅回调任务）
  *   POST …/api/v1/tasks/{id}/priority 优先级
  *   POST …/api/v1/stats             统计
+ *   POST …/api/v1/models            可用模型查询（provider 级失败如实上报）
+ *   POST …/api/v1/admin/models      模型配置面读取（admin）
+ *   POST …/api/v1/admin/models/providers 模型 provider 段写入（admin）
  *   POST …/api/v1/sessions/{id}/messages  会话消息查询
  *   POST …/api/v1/callback-test/receive   回调测试接收（免签名）
  *   POST …/api/v1/callback-test/{id}      回调测试状态查询
@@ -33,6 +36,7 @@ import {
 } from '../core/ops.ts'
 import { discardInbound, downloadInbound, readAttachmentBytes, recordInbound } from '../core/attachment-flow.ts'
 import { toAttachmentEntry } from '../core/attachments.ts'
+import { collectModelCatalog, readModelsConfig, writeModelProviders, type ModelCatalog } from '../core/models-config.ts'
 import type { BridgeRuntime } from '../shared/runtime.ts'
 import type { TaskAttachmentRow } from '../shared/types.ts'
 import { validateSubmitInput } from '../core/submission.ts'
@@ -202,6 +206,35 @@ async function dispatch(
     writeJson(res, 200, await modelsOp(runtime))
     return
   }
+  // 模型配置面（§15）：桥接 profile 是 headless，provider 路由由本 profile 的 settings 段供给。
+  //   读：实时目录 + 该条目的 settings 状态与来源；
+  //   写：`settings.replace` 该段（列出的 route 即完整集合）。
+  if (pathname === '/bizbridge/api/v1/admin/models') {
+    requireAdmin(caller, 'models configuration')
+    fileLogger.info('models-config', `read by ${caller.clientId}`)
+    writeJson(res, 200, await readModelsConfig(runtime.llm, runtime.settings, runtime.config.models.settingsNamespace))
+    return
+  }
+  if (pathname === '/bizbridge/api/v1/admin/models/providers') {
+    requireAdmin(caller, 'models configuration')
+    const expectedRevision = body.expected_revision
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0)) {
+      throw new InvalidRequestError('expected_revision must be a non-negative safe integer')
+    }
+    const routes = typeof body.providers === 'object' && body.providers !== null && !Array.isArray(body.providers)
+      ? Object.keys(body.providers as Record<string, unknown>)
+      : []
+    // 只记 route 名：这一段理论上不含密钥（值里是 apiKeyEnv 这类**引用名**），但不赌。
+    fileLogger.info('models-config', `write by ${caller.clientId}`, { routes, expectedRevision })
+    writeJson(res, 200, await writeModelProviders(
+      runtime.llm,
+      runtime.settings,
+      runtime.config.models.settingsNamespace,
+      body.providers,
+      expectedRevision as number | undefined,
+    ))
+    return
+  }
   // /bizbridge/api/v1/sessions/<id>/messages
   //   <id> 为内部会话 id（`<clientId>:<type>:<外部 id>`，含冒号）。浏览器侧习惯用
   //   encodeURIComponent 拼接，会把 `:` 编成 `%3A`；这里宽松匹配后再解码，两种写法都接受，
@@ -279,48 +312,15 @@ async function dispatch(
 }
 
 /** 查询可用模型列表：从 DSH LLM 运行时读取 provider → model → reasoning efforts。 */
-async function modelsOp(runtime: BridgeRuntime): Promise<Record<string, unknown>> {
-  const providers = runtime.llm.listProviders()
-  const result: Array<Record<string, unknown>> = []
-  for (const provider of providers) {
-    let models: Array<Record<string, unknown>> = []
-    try {
-      const rawModels = await runtime.llm.listModels(provider.id)
-      for (const m of rawModels) {
-        const model: Record<string, unknown> = {
-          id: m.id,
-          name: m.name,
-          description: m.description ?? null,
-          inputModalities: m.inputModalities ?? null,
-          reasoningEfforts: null,
-          defaultMaxTokens: null,
-        }
-        // 尝试获取模型详情（reasoning efforts + maxTokens）
-        try {
-          const info = await runtime.llm.resolveModelInfo(provider.id, m.id)
-          if (info.reasoning?.efforts) {
-            model.reasoningEfforts = info.reasoning.efforts.map(e => ({
-              id: e.id,
-              name: e.name,
-              description: e.description ?? null,
-            }))
-          }
-          if (info.defaultMaxTokens !== undefined) {
-            model.defaultMaxTokens = info.defaultMaxTokens
-          }
-        } catch { /* 单模型查询失败不影响整体 */ }
-        models.push(model)
-      }
-    } catch {
-      // adapter 不可用或查询失败，跳过该 provider 的模型
-    }
-    result.push({
-      id: provider.id,
-      name: provider.name,
-      models,
-    })
+async function modelsOp(runtime: BridgeRuntime): Promise<ModelCatalog> {
+  return await collectModelCatalog(runtime.llm)
+}
+
+/** 管理面守卫：仅 `admin` scope 可调用（模型配置会改本 profile 的 settings）。 */
+function requireAdmin(caller: { clientId: string; scope: readonly string[] }, what: string): void {
+  if (!caller.scope.includes('admin')) {
+    throw new ForbiddenError(`${what} requires the "admin" scope`)
   }
-  return { providers: result }
 }
 
 /**

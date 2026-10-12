@@ -53,6 +53,25 @@
     provider: deepseek-official
     model: deepseek-flash
 
+# 2b) 其它模型（可选）—— provider 目录是 **profile 级**的：在 dsh-web 里配的模型不会自动出现在
+#     桥接进程里（本包的 dsh-web 与桥接是两个 profile；共享的只有 API Key 那类凭据）。
+#     要用别的模型，就把 provider 段写在这里——与 dsh-web 的 Models 页写的是**同一种** settings 文档；
+#     也可以在运行后用管理面接口写入（POST /bizbridge/api/v1/admin/models/providers，见 code/docs/api.md §15）。
+#
+#     下面是被注释的样例：apiKeyEnv 是**环境变量名**，key 本身仍只放
+#     <包根>/runtime/.credentials.yaml（用 dsh-web.cmd 填，别手改）。
+#
+# - id: llm-pi-ai
+#   config:
+#     providers:
+#       xiaomi:
+#         apiKeyEnv: XIAOMI_API_KEY
+#         models:
+#           - id: mimo-v2.6-flash
+#             name: mimo-v2.6-flash
+#             contextWindow: 1024000
+#             maxTokens: 128000
+
 # 3) API Key **不在这里**。
 #    llm-deepseek 只认环境变量名（apiKeyEnv，默认 DEEPSEEK_API_KEY），
 #    secret 落在 <包根>/runtime/.credentials.yaml。
@@ -82,6 +101,10 @@
       callbackTimeout: 30
       maxRetry: 3
       retryInterval: 30
+
+    # 模型面：承载 provider 路由的宿主条目 id（默认就是 dsh-base 的 llm-pi-ai 行，通常不用改）
+    # models:
+    #   settingsNamespace: llm-pi-ai
 
     # agent 侧安全约束：业务系统转发的 prompt 与附件一律按不可信输入处理
     security:

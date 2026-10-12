@@ -41,6 +41,40 @@ export interface LlmLike {
       defaultEffort?: string
     }
   }>
+  /**
+   * 可配置 provider 目录（provider / displayName / settingsNs / settingsPath / declared / error）。
+   * 0.2.0 起提供；缺失时不透出该字段（模型列表不受影响）。
+   */
+  listConfigurableProviders?(): Array<{
+    provider: string
+    displayName: string
+    settingsNs: string
+    settingsPath: readonly string[]
+    declared: boolean
+    error?: string
+  }>
+}
+
+/**
+ * 宿主用户设置（配置面）最小面（真实实现 ctx.settings）。
+ *
+ * 该服务在 `dsh-base` 里挂着（`config-editor` + `settings`），所以 headless 的桥接 profile
+ * **同样可写**——写的对象就是本 profile 的 `cordis.patch.yml`。dsh-web 的 Models 页走的也是它。
+ */
+export interface SettingsLike {
+  /** 本 profile 的 settings 文档路径。 */
+  readonly documentPath: string
+  /** 该 profile 是否接受写入。 */
+  readonly writable: boolean
+  /** 读取各条目的表单值与修订号（`user` 为该条目的用户层覆盖）。 */
+  describe(options?: { redactSecrets?: boolean }): Array<{
+    ns: string
+    revision: number
+    value: unknown
+    user: unknown
+  }>
+  /** 重置该条目的用户层字段后写入给定段落（稀疏合并到继承层之上）。 */
+  replace(ns: string, section: object, expectedRevision?: number): Promise<void>
 }
 
 /** 会话查询最小面（真实实现 ctx.sessionQuery）。 */
@@ -83,6 +117,11 @@ export interface BridgeRuntime {
   nonceSeen: NonceSeen
   logger: LoggerLike
   llm: LlmLike
+  /**
+   * 宿主用户设置服务（配置面）。桥接 profile 是 headless，provider 路由只能由本 profile 的
+   * settings 段供给；缺失时模型配置面只读、目录仍照常（见 core/models-config.ts）。
+   */
+  settings: SettingsLike | undefined
   sessionQuery: SessionQueryLike | undefined
   fileLogger: FileLogger
   /** 第一方参考/调试页面静态资源（index/admin/client/utils + common.js + style.css）。 */

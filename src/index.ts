@@ -39,6 +39,7 @@ import { RunHub } from './core/runner.ts'
 import { CallbackScheduler } from './core/scheduler.ts'
 import { FileLogger } from './core/logger.ts'
 import { decodeSessionEvent, type SessionEventLike } from './dsh/gateway.ts'
+import { modelCatalogSummary } from './core/models-config.ts'
 
 /** 配置 schema 的 TS 接口（设计 §8.1 的扁平形态）。 */
 export interface Config {
@@ -47,6 +48,7 @@ export interface Config {
   auth?: RawConfig['auth']
   scheduler?: RawConfig['scheduler']
   http?: RawConfig['http']
+  models?: RawConfig['models']
   security?: RawConfig['security']
   attachments?: RawConfig['attachments']
 }
@@ -80,6 +82,10 @@ export const Config: z<Config> = z.object({
   http: z.object({
     sseKeepalive: z.natural().min(1).default(15),
   }).default({ sseKeepalive: 15 }),
+  models: z.object({
+    // 承载 provider 路由的宿主条目 id（dsh-base 的 llm-pi-ai 行）；见 config.ts 同名注释
+    settingsNamespace: z.string().default('llm-pi-ai'),
+  }).default({ settingsNamespace: 'llm-pi-ai' }),
   security: z.object({
     policySection: z.boolean().default(true),
     denyTools: z.array(z.string()).default([]),
@@ -222,6 +228,9 @@ export function apply(ctx: Context, rawConfig: Config): void {
     nonceSeen,
     logger,
     llm: ctx.llm,
+    // 配置面：provider 路由由本 profile 的 settings 段供给（models.settingsNamespace）。
+    // 非强依赖——缺失时模型配置面只读，模型目录照常。
+    settings: ctx.get('settings'),
     sessionQuery: ctx.get('sessionQuery'),
     fileLogger,
     staticFiles: loadStaticFiles((message) => logger.info(message)),
@@ -248,6 +257,28 @@ export function apply(ctx: Context, rawConfig: Config): void {
   if (config.security.denyTools.length > 0) {
     say(`安全策略：桥接会话禁用工具 ${config.security.denyTools.join(', ')}`)
   }
+  // 5d. 模型目录可见性（§6.5）：headless profile 的 provider 来自**本 profile** 的 settings 段，
+  //     配错作用域时目录只表现为"少一个 provider"、毫无提示——启动日志是唯一一定有人看的地方。
+  //     延迟一拍：provider 行由各自的插件注册，可能晚于本插件激活。
+  ctx.effect(() => {
+    const MODEL_CATALOG_SUMMARY_DELAY_MS = 1000
+    const timer = setTimeout(() => {
+      void modelCatalogSummary(ctx.llm).then((catalog) => {
+        say(`模型目录：${catalog.text}`)
+        if (catalog.providerCount <= 1) {
+          say('提示：本 profile 只注册了默认 provider。若要用网页（dsh-web）里配的其它模型，'
+            + `把它们写进本 profile 的模型配置（POST /bizbridge/api/v1/admin/models/providers，见 docs/config.md §models）`)
+        }
+      }).catch((error: unknown) => {
+        logger.warn(`model catalog summary unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      if (ctx.get('settings') === undefined) {
+        say('警告：宿主未挂载 settings 服务——模型配置面只读，provider 路由需手工写进本 profile 的 cordis.patch.yml')
+      }
+    }, MODEL_CATALOG_SUMMARY_DELAY_MS)
+    timer.unref?.()
+    return () => clearTimeout(timer)
+  }, 'dsh-biz-bridge: model catalog summary')
   const scheduler = new CallbackScheduler(runtime)
 
   // 6. 全局事件监听（ACP 桥接同款：插件级 ctx.on + 按 session 路由/所有权过滤）。

@@ -257,7 +257,11 @@
     select.innerHTML = '<option value="">默认</option>'
     providers.forEach(function (p) {
       var opt = document.createElement('option')
-      opt.value = p.id; opt.textContent = p.name || p.id
+      opt.value = p.id
+      // provider 级查询失败如实标出：过去只是"目录少一项"，无从区分"没配这个 provider"
+      // 与"配了但 adapter 查不出来"（见 docs/model-config-scope-issue.md）。
+      opt.textContent = (p.name || p.id) + (p.error ? '（查询失败）' : '')
+      if (p.error) { opt.disabled = true; opt.title = String(p.error) }
       select.appendChild(opt)
     })
   }
@@ -319,7 +323,12 @@
       populateProviderSelect($('cProvider'), modelsData.providers)
       wireProviderModelEffort('s')
       wireProviderModelEffort('c')
-      B.showMsg($('msgComms'), '模型列表已加载（' + modelsData.providers.length + ' 个 provider）', 'ok')
+      var failed = modelsData.providers.filter(function (p) { return p.error })
+      B.showMsg($('msgComms'),
+        '模型列表已加载（' + modelsData.providers.length + ' 个 provider'
+          + (failed.length ? '，其中 ' + failed.length + ' 个查询失败：' + failed.map(function (p) { return p.id }).join('、') : '')
+          + '）',
+        failed.length ? 'err' : 'ok')
     } catch (e) { B.showMsg($('msgComms'), '模型加载失败：' + e.message, 'err') }
   }
   $('btnLoadModels').onclick = function () { loadModels() }

@@ -3,7 +3,7 @@
 ## 0.1.4-20261012
 
 详见 [`logs/0.1.4-20261012.md`](logs/0.1.4-20261012.md)
-适配 DSH 0.2.0-rc.2：peer 区间升到 `^0.2.0-rc.2`（该步是硬需求），接口面零差异、功能源码零改动；挂载 DSH 自带 Office 技能（docx/xlsx/pptx 可读）并相应收窄内容不可信策略；便携包新增 `fix-sandbox-acl` 运维脚本与 Office 运行时探测
+适配 DSH 0.2.0-rc.2：peer 区间升到 `^0.2.0-rc.2`（该步是硬需求），接口面零差异、功能源码零改动；挂载 DSH 自带 Office 技能（docx/xlsx/pptx 可读）并相应收窄内容不可信策略；便携包新增 `fix-sandbox-acl` 运维脚本与 Office 运行时探测；新增模型配置面（admin 读写本 profile 的 provider 段）且模型目录不再静默吞掉 provider 级失败
 
 ## 0.1.3-20260924
 

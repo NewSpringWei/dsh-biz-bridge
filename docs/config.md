@@ -145,6 +145,33 @@ scope 权限说明：
 |----|------|------|
 | `sseKeepalive` | `15` | 流式响应 keepalive 注释行间隔（秒） |
 
+### models（模型面）
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| `settingsNamespace` | `llm-pi-ai` | 承载 provider 路由的宿主条目 id（`dsh-base` 的 `llm-pi-ai` 行）。换适配器或改行 id 时同步这一项 |
+
+桥接 profile 默认只有 `dsh-base` 挂的 `llm-deepseek` 默认路由。要用**别的模型**（例如在 dsh-web
+里配过的小米 / 智谱 / 通义），必须把 provider 段配进**本 profile**——provider 目录是 **profile 级**的，
+只有凭据是 runtime 级共享（`<DSH_HOME>/.credentials.yaml`）：
+
+```jsonc
+// POST /bizbridge/api/v1/admin/models/providers（admin scope 签名；providers 即完整集合）
+{
+  "providers": {
+    "xiaomi": { "apiKeyEnv": "XIAOMI_API_KEY", "models": [{ "id": "mimo-v2.6-flash" }] }
+  }
+}
+```
+
+也可以把同一段直接写进本 profile 的 `cordis.patch.yml`（`- id: llm-pi-ai` + `config.providers`）——
+两条路落在**同一个** settings 文档上。读接口（api.md §15.1）会告诉你那份文件是哪个、当前生效值是什么。
+
+启动日志有一行 `模型目录：N 个 provider、M 个模型 — …`；只注册了默认 provider 时会额外提示。
+**配错作用域过去是完全静默的**：目录只是少一个 provider、没有任何提示。
+
+> **可用性**：目录只证明"注册了"。账户欠费、配额用尽仍会照常列出，需调用侧探测。
+
 ### security（agent 侧安全策略）
 
 > 入口校验只能约束"请求本身"，约束不了"agent 拿到请求后能做什么"。本节的约束注册在
@@ -338,7 +365,9 @@ DSH 自身数据（`profiles/`、`sessions/`、`storages/`、`settings.yaml`、`
 > 安全提示：凭据文件仅你的 OS 用户可读，但 agent 的工具进程以同一用户运行，
 > 因此该存储**无法对 agent 隔离密钥**。
 
-其他 provider（`llm-pi-ai`）的配置与凭据在同一份 profile 配置里，按该插件的字段填写。
+其他 provider（`llm-pi-ai`）的路由段也落在**本 profile** 的 settings 文档里，
+写入方式见上文 [`### models`](#models模型面) 与 api.md §15（管理面接口）；
+凭据仍走 `<DSH_HOME>/.credentials.yaml`（runtime 级，两个 profile 共用）。
 
 ### 4.3 对外服务与 nginx
 

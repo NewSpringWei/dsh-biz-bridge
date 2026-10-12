@@ -73,6 +73,24 @@
 #       或启动环境变量。解析优先级：环境变量 > .credentials.yaml > 项目 .env。
 #       详见 config.md §4.2。
 
+# 3b) 其它模型（可选）—— provider 目录是 **profile 级**的：在 dsh-web 里配的模型**不会**
+#     自动出现在桥接进程里（两个 profile 各自持有自己的 settings 文档；共享的只有凭据）。
+#     要用别的模型，把 provider 段写在这里——与 dsh-web 的 Models 页写的是同一种文档；
+#     也可以用管理面接口写入（POST /bizbridge/api/v1/admin/models/providers，见 api.md §15）。
+#
+#     下面是被注释的样例（apiKeyEnv 是**环境变量名**，key 放 <DSH_HOME>/.credentials.yaml）：
+#
+# - id: llm-pi-ai
+#   config:
+#     providers:
+#       xiaomi:
+#         apiKeyEnv: XIAOMI_API_KEY
+#         models:
+#           - id: mimo-v2.6-flash
+#             name: mimo-v2.6-flash
+#             contextWindow: 1024000
+#             maxTokens: 128000
+
 # 4) 插件配置
 - id: dsh-biz-bridge
   config:

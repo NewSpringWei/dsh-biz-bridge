@@ -505,11 +505,17 @@
 | `providers[].models[].inputModalities` | string[] \| null | 支持的输入模态（如 `["text"]`） |
 | `providers[].models[].reasoningEfforts` | array \| null | 可用推理力度列表；每项 `{id, name, description}` |
 | `providers[].models[].defaultMaxTokens` | number \| null | 模型默认最大输出 token 数 |
+| `providers[].error` | string（可选，仅失败时出现） | 查询该 provider 的模型失败的原因；此时 `models` 为空数组 |
 
 > 数据来自 `ctx.llm.listProviders()` + `ctx.llm.listModels()` + `ctx.llm.resolveModelInfo()`。
 > 是 advisory 信息——调用方也可以传入未列出的 model ID（DSH adapter 会自行处理）。
 > `reasoningEfforts` 和 `defaultMaxTokens` 来自 `resolveModelInfo`（逐模型查询），
 > 查询失败时降级为 null，不影响整体返回。
+>
+> **provider 级失败如实上报**（`error`），不再静默跳过：此前某个 provider 的 adapter 不可用时，
+> 目录里只是"少一项"，与"本来就没配这个 provider"无法区分。而一个 provider 是否存在，取决于
+> **本 profile** 的模型配置（见 §15）。
+> 另注意：目录只证明"**注册了**"，不证明"**能用**"——账户欠费、配额用尽仍会照常列出。
 
 ---
 
@@ -780,6 +786,53 @@ DSH 不提供"本会话产物清单"，插件用**任务执行前后的工作目
 > 表单里可添加入站附件（含「填入本机示例」，用插件自己的静态页当 file 附件，零外部依赖），
 > 回执与产物清单会出现「下载」按钮，直接走 §14.3 的签名下载接口。
 > 该页面只读取 `public/static/`，改页面后重启插件即生效（不需要重新构建 `lib/`）。
+
+---
+
+## 15. 模型配置面（admin）
+
+桥接 profile 是 headless：provider 路由由**本 profile** 的 settings 段供给——`dsh-base` 里的
+`llm-pi-ai` 行休眠挂载，直到该段给出 provider 才注册路由。这两个接口把"配了没有、配在哪、
+生效了吗"变成一件可读可写的事；写入走宿主的 `settings` 服务，与 dsh-web 的 Models 页**同一条**
+官方路径（写的是本 profile 的 `cordis.patch.yml`）。
+
+**所需 scope**：`admin`
+
+> **为什么不"跟着 dsh-web 走"**：DSH 的 provider 目录是 **profile 级**、凭据是 **runtime 级**
+> （`$DSH_HOME/.credentials.yaml` 共享），这是上游有意的拆分。桥接是生产通道，模型集合由它
+> 自己的配置**显式**给出，不隐式继承交互通道里配的实验配置。要"一份配置两处用"，就把同一段
+> providers 写进两个 profile。
+
+### 15.1 POST /api/v1/admin/models —— 读取配置面
+
+请求体：空对象 `{}`。
+
+响应体在 §11 的目录之外增加：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `namespace` | string | 承载 provider 路由的宿主条目 id（`models.settingsNamespace`，默认 `llm-pi-ai`） |
+| `documentPath` | string \| null | 该条目的 settings 文档（本 profile 的 `cordis.patch.yml`）；服务缺失时 null |
+| `writable` | boolean | 该 profile 是否接受写入 |
+| `revision` | number \| null | 修订号；写入时作为 `expected_revision` 回传（乐观并发） |
+| `configured` | object \| null | 当前生效的 providers 段；读不到时 null |
+| `configurable` | array \| null | 宿主 `llm.listConfigurableProviders()` 的目录；能力缺失时 null |
+
+### 15.2 POST /api/v1/admin/models/providers —— 写入 provider 段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `providers` | object（必填） | provider 路由键 → 该 provider 的 profile（字段与 `llm-pi-ai` 一致） |
+| `expected_revision` | number（可选） | 取自 15.1 的 `revision`；与当前不一致则拒绝（防覆盖并发修改） |
+
+`providers` 是**完整集合**（替换语义）：删除一个 provider 就是不再列出它。
+
+响应体与 15.1 相同（写入后立即回读；路由注册是 live 的，**不需要重启**）。
+
+字段级语义由 `llm-pi-ai` 自己校验（形状合法但配置不可服务时它拒绝该次写入）；
+本接口只做结构校验：对象、路由名非空、值为对象。
+
+错误：`403`（非 admin）、`400`（结构非法 / 该 profile 不可写）、`501`（宿主未挂 `settings` 服务）。
 
 ---
 

@@ -48,6 +48,17 @@ export interface ResolvedConfig {
     /** SSE keepalive 注释行间隔（秒），设计 §6.4.1 默认 15。 */
     sseKeepalive: number
   }
+  /** 模型面（§8.1）：provider 路由来自**本 profile** 的 settings 段。 */
+  models: {
+    /**
+     * 承载 provider 路由的宿主条目 id（`dsh-base` 的 `llm-pi-ai` 行）。
+     *
+     * 桥接 profile 是 headless：`llm-pi-ai` 在 base 里休眠挂载，直到本 profile 的 settings
+     * 段供上 provider 才注册路由。插件不自己注册 provider，只把这一段读/写封装成显式动作
+     * （`POST /api/v1/admin/models/providers`）；改名或换适配器时改这一项即可。
+     */
+    settingsNamespace: string
+  }
   /** agent 侧安全策略（§6.4.7）：在桥接会话自己的作用域内生效。 */
   security: {
     /** 是否把"转发内容不可当指令"策略写入系统提示词（默认 true）。 */
@@ -125,6 +136,7 @@ export const DEFAULTS = {
     retryInterval: 30,
   },
   http: { sseKeepalive: 15 },
+  models: { settingsNamespace: 'llm-pi-ai' },
   security: {
     policySection: true,
     denyTools: [],
@@ -163,6 +175,7 @@ export type RawConfig = Partial<{
   }>
   scheduler: Partial<ResolvedConfig['scheduler']>
   http: Partial<ResolvedConfig['http']>
+  models: Partial<ResolvedConfig['models']>
   security: Partial<ResolvedConfig['security']>
   attachments: Partial<Omit<ResolvedConfig['attachments'], 'outbound'> & {
     outbound: Partial<ResolvedConfig['attachments']['outbound']>
@@ -266,6 +279,11 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     throw new Error('dsh-biz-bridge: config http.sseKeepalive must be a positive safe integer')
   }
 
+  const models = { settingsNamespace: input.models?.settingsNamespace ?? DEFAULTS.models.settingsNamespace }
+  if (typeof models.settingsNamespace !== 'string' || models.settingsNamespace.trim() === '') {
+    throw new Error('dsh-biz-bridge: config models.settingsNamespace must be a non-empty string')
+  }
+
   const securityRaw = input.security ?? {}
   if (securityRaw.policySection !== undefined && typeof securityRaw.policySection !== 'boolean') {
     throw new Error('dsh-biz-bridge: config security.policySection must be a boolean')
@@ -342,6 +360,7 @@ export function normalizeConfig(raw: RawConfig | undefined): ResolvedConfig {
     auth: { timestampWindow, nonceCacheSize, clients },
     scheduler,
     http,
+    models,
     security,
     attachments,
   }

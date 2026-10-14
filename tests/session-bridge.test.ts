@@ -32,10 +32,21 @@ function makeGateway(overrides: Partial<{
   live: boolean
   persisted: PersistedSessionProbe | undefined
   createFails: Error | undefined
-}> = {}): SessionGateway & { calls: string[]; lastAgentOptions?: AgentParamOverrides } {
+}> = {}): SessionGateway & {
+  calls: string[]
+  applied: Array<{ sessionId: string; selection: AgentParamOverrides | undefined }>
+  lastAgentOptions?: AgentParamOverrides
+} {
   const calls: string[] = []
+  const applied: Array<{ sessionId: string; selection: AgentParamOverrides | undefined }> = []
   return {
     calls,
+    applied,
+    // 模型选择走 agent 自己的作用域（真实网关里是 installModelSelection），
+    // 不进 `calls` —— 决策流的断言仍然只看 live/stat/resume/create 四步。
+    applyModelSelection(_agent: BridgeAgent, sessionId: string, selection?: AgentParamOverrides): void {
+      applied.push({ sessionId, selection })
+    },
     liveAgent(sessionId: string): BridgeAgent | undefined {
       calls.push(`live:${sessionId}`)
       return overrides.live === true ? fakeAgent(sessionId) : undefined
@@ -135,4 +146,51 @@ test('session busy guard tracks activities', async () => {
   assert.equal(pool.isBusy(SESSION), true)
   pool.endActivity(SESSION)
   assert.equal(pool.isBusy(SESSION), false)
+})
+
+/*
+ * §5.2.2 会话级模型选择。
+ *
+ * 这一组钉住的是"同一会话内换模型"能否生效 —— 现场的失败形态是**静默的**：
+ * 任务照常成功，只是用了上一次的模型（`params` 换了也没人报错）。
+ * 根因是实例级 `AgentOptions` 只在 create/resume 进 DSH，而 live 复用会把它丢掉。
+ */
+
+test('live reuse still applies this request model selection (regression: agentOptions was dropped)', async () => {
+  const gateway = makeGateway({ live: true })
+  const pool = new AgentPool(gateway)
+  await pool.openAgent(SESSION, { provider: 'deepseek-official', model: 'deepseek-flash' })
+
+  // 决策流仍然只走 live：不 stat、不 resume、不 create
+  assert.deepEqual(gateway.calls, [`live:${SESSION}`])
+  // 但模型选择必须抵达网关 —— 否则这个会话的模型永远停在第一次那个
+  assert.deepEqual(gateway.applied, [
+    { sessionId: SESSION, selection: { provider: 'deepseek-official', model: 'deepseek-flash' } },
+  ])
+})
+
+test('resume and create paths both apply the model selection', async () => {
+  const resumed = makeGateway({ persisted: { header: { cwd: `${WS}/biz-a` } } })
+  await new AgentPool(resumed).openAgent(SESSION, { provider: 'xiaomi', model: 'mimo-v2.6-flash' })
+  assert.deepEqual(resumed.applied, [
+    { sessionId: SESSION, selection: { provider: 'xiaomi', model: 'mimo-v2.6-flash' } },
+  ])
+
+  const created = makeGateway()
+  await new AgentPool(created).openAgent(SESSION, { provider: 'xiaomi', model: 'mimo-v2.6-flash' })
+  assert.deepEqual(created.applied, [
+    { sessionId: SESSION, selection: { provider: 'xiaomi', model: 'mimo-v2.6-flash' } },
+  ])
+})
+
+test('create-then-resume fallback applies the selection exactly once', async () => {
+  const gateway = makeGateway({ createFails: new AlreadyExistsLike('already exists') })
+  await new AgentPool(gateway).openAgent(SESSION, { provider: 'xiaomi', model: 'mimo-v2.6-flash' })
+  assert.equal(gateway.applied.length, 1)
+})
+
+test('a request without provider/model still passes through (keeps the session selection)', async () => {
+  const gateway = makeGateway({ live: true })
+  await new AgentPool(gateway).openAgent(SESSION)
+  assert.deepEqual(gateway.applied, [{ sessionId: SESSION, selection: undefined }])
 })

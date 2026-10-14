@@ -184,13 +184,13 @@ export function apply(ctx: Context, rawConfig: Config): void {
   // 3. 会话桥接层（§5.2）与事件归约 hub（§5.5）
   //    每个新建/恢复的 agent 在自己作用域内应用安全策略（§6.4.7）：系统提示词声明"转发内容
   //    不可当指令"约束，并按配置禁用工具、切换沙箱模式——只影响桥接创建的会话。
-  //    安全事件写插件的文件日志（可审计），而非仅 console。
+  //    安全事件与**会话级模型选择**（§5.2.3）都写插件的文件日志（可审计、可排查），而非仅 console。
   const gateway = createSessionGateway(ctx, layout.workspaceDir, (agent, sessionId) => {
     applyAgentSecurityPolicy(agent, sessionId, config.security, {
       info: (message) => fileLogger.info('security', message),
       warn: (message) => fileLogger.warn('security', message),
     })
-  })
+  }, (message) => fileLogger.info('model-selection', message))
   const pool = new AgentPool(gateway)
   const hub = new RunHub({
     begin: (sessionId) => pool.beginActivity(sessionId),

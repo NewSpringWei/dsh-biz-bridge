@@ -52,6 +52,23 @@ export interface SessionGateway {
   createAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent>
   /** b. resume 已持久化会话（仅无 live agent 时调用）。 */
   resumeAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent>
+  /**
+   * 把本轮的**会话级模型选择**装到 agent 上（§5.2.2）。
+   *
+   * 为什么 `createAgent`/`resumeAgent` 的 `agentOptions` 不够：那是 **agent 实例级**的，
+   * 只在创建/恢复那一刻进 DSH（`AgentOptions.provider/model` 被实例持有）。而 live agent
+   * 会被复用（路径 a）、桥接又从不主动销毁它 —— 于是后续请求的 `agentOptions` 被静默丢弃，
+   * 表现为"一个会话的模型第一次用哪个就定死了"，只有换会话 id 才能换模型。
+   *
+   * 会话级选择装在 agent 自己的作用域上，DSH 每步请求重新解析（`system-prompt/assemble`
+   * → `agent/request`），所以同一会话内换模型立即生效，且**对话记忆不丢**（会话日志未变）。
+   * 与 DSH 官方 `selectModel` 走的是同一条机制，区别只是入口在桥接的 `params` 而不是 GUI。
+   * @param agent - 本轮要用的 agent（live / 恢复 / 新建都走这里）。
+   * @param sessionId - 会话身份；选择按会话归属、跨请求保持。
+   * @param selection - 本轮显式指定的 agent 覆盖项；`provider` 与 `model` **不成对时保持上次的选择**
+   *   （单给一个 DSH 会直接报 `agent has no provider/model`，形状校验在 ops 层已做过）。
+   */
+  applyModelSelection(agent: BridgeAgent, sessionId: string, selection?: AgentParamOverrides): void
 }
 
 /** 目录物理等值比较（同 realpath；解析失败回退词法，对齐 ACP sameDirectory）。 */
@@ -89,10 +106,21 @@ export class AgentPool {
    */
   async openAgent(sessionId: string, agentOptions?: AgentParamOverrides): Promise<BridgeAgent> {
     this.assertOpen()
+    /**
+     * 每条返回路径的收尾：把本轮模型选择应用上（§5.2.2）。
+     *
+     * **live 复用这条路径尤其不能漏** —— 它正是"换了模型不生效"的来源：
+     * 实例级 `agentOptions` 只在 create/resume 进 DSH，复用 live agent 时无处可去。
+     * 收成一个局部函数，是为了让"返回 agent"与"应用选择"在四条路径上不可能走散。
+     */
+    const applied = (agent: BridgeAgent): BridgeAgent => {
+      this.gateway.applyModelSelection(agent, sessionId, agentOptions)
+      return agent
+    }
     // a. 已有 live agent → 直接复用（agents.get；绝不 resume——resume 会与 live
     //    会话持有的持久写句柄冲突：already owned by an active write handle）。
     const live = this.gateway.liveAgent(sessionId)
-    if (live !== undefined) return live
+    if (live !== undefined) return applied(live)
     // b. 有持久化 log → resume；cwd 校验（期望 = 该 session 所属 client 的 workspace）。
     const persisted = await this.gateway.persistedStat(sessionId)
     if (persisted !== undefined) {
@@ -103,14 +131,14 @@ export class AgentPool {
           throw new CwdMismatchError(sessionId, persistedCwd, expected)
         }
       }
-      return await this.gateway.resumeAgent(sessionId, agentOptions)
+      return applied(await this.gateway.resumeAgent(sessionId, agentOptions))
     }
     // c. 全新会话 → create；并发兜底仅对 already-exists 错误 fallback。
     try {
-      return await this.gateway.createAgent(sessionId, agentOptions)
+      return applied(await this.gateway.createAgent(sessionId, agentOptions))
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error
-      return await this.gateway.resumeAgent(sessionId, agentOptions)
+      return applied(await this.gateway.resumeAgent(sessionId, agentOptions))
     }
   }
 

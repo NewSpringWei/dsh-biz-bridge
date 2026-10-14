@@ -6,6 +6,8 @@
  * - ctx.sessions（内存 store 活跃查询，路径 a）
  * - ctx.sessionPersistence（持久化探测 stat，路径 b）
  * - ctx.agents（create / resume，返回 AgentHandle）
+ * - 会话级模型选择（§5.2.2）：经 `installModelSelection` 装在 agent 自己的作用域上，
+ *   每步请求重新解析 —— 这是"同一会话内换模型"能生效的唯一通道（实例级 `AgentOptions` 不够）
  * - 消息构造用 @deepseek-ai/dsh-llm 的 createUserMessage（§5.3）
  *
  * 事件解码（session/event → 归一化 TurnEvent）在 ./decode.ts：零 DSH 依赖、
@@ -16,8 +18,9 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { AgentHandle } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import { ReasoningEffortId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
@@ -25,6 +28,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { clientWorkspaceDir } from '../config/config.ts'
 import { NotImplementedError } from '../shared/errors.ts'
+import { modelSelectionInstallLog, modelSwitchLog, type SessionModelSelection } from '../core/model-selection.ts'
 import type { BridgeAgent, SessionGateway } from '../core/session-bridge.ts'
 import type { AttachmentAdmissionPort } from '../core/attachments.ts'
 import type {
@@ -48,12 +52,24 @@ function clientOfSession(sessionId: string): string {
 }
 
 /**
+ * 包装对象 → 真实 DSH Agent 的私有通道。
+ *
+ * 为什么需要它：`liveAgent()` **每次调用都重新包装**同一个真实 agent，所以包装对象当不了
+ * 幂等键；而会话级模型选择只能给同一个真实 agent 装一次 —— 重复装会注册多份
+ * `agent/request` listener，模型被叠加覆盖。
+ */
+const RAW_AGENT = Symbol('dsh-biz-bridge.rawAgent')
+/** 带私有通道的桥接 agent 面（只有本文件读它）。 */
+type BridgedAgent = BridgeAgent & { readonly [RAW_AGENT]?: AgentHandle['agent'] }
+
+/**
  * AgentHandle.agent / agents.get 返回的 live Agent → 桥接 agent 面。
  * 取消原因统一走 hook（供断连/管理取消识别）。
  */
 function toAgentBridge(agent: AgentHandle['agent']) {
   return {
     id: agent.session.id,
+    [RAW_AGENT]: agent,
     get idle(): boolean {
       return agent.status === 'idle'
     },
@@ -86,17 +102,76 @@ function toBridgeAgent(handle: AgentHandle): BridgeAgent {
  * @param onAgentScope - 可选：在**新建/恢复的 agent 自己的作用域**上应用安全策略
  *   （系统提示词段落、工具限制、会话沙箱模式）。在首次投递前调用，保证策略对模型的
  *   首个请求即生效。
+ * @param log - 可选：会话级模型选择的日志出口（§5.2.3）。**只在选择首次建立或真的变化时**
+ *   调用 —— 每轮都写会把真正的切换埋掉（判定与文案见 `core/model-selection.ts`）。
  */
 export function createSessionGateway(
   ctx: Context,
   workspaceDir: string,
   onAgentScope?: (agent: { ctx: Context; session: AgentHandle['agent']['session'] }, sessionId: string) => void,
+  log?: (message: string) => void,
 ): SessionGateway {
   /** 某 session 的期望工作目录：runtime/workspace/<clientId>（业务隔离边界）。 */
   const workspaceOf = (sessionId: string): string =>
     clientWorkspaceDir(workspaceDir, clientOfSession(sessionId))
 
+  /**
+   * sessionId → 会话级模型选择（跨请求保持）。
+   * 与 DSH `ModelSelectionRef` 同形：桥接只写 `current`（调用方显式指定的模型），
+   * `assembled` 由 DSH 在每步提示词组装时快照，不归桥接管。
+   */
+  const modelSelections = new Map<string, ModelSelectionRef>()
+  /** 已装过选择的真实 agent（幂等键见 `RAW_AGENT`）。 */
+  const selectionInstalled = new WeakSet<object>()
+
+  /**
+   * 把本轮模型选择装到 agent 上（§5.2.2）。
+   *
+   * 只写成 `current` 而不动 DSH 的任何内部状态：每步请求 DSH 自己会把
+   * `system-prompt/assemble` 的快照应用到 `agent/request`，并在路由变化时往会话追加
+   * 一条"model changed"通告 —— 所以这里不需要、也不应该自己拼提示词。
+   */
+  function applyModelSelection(agent: BridgeAgent, sessionId: string, selection?: AgentParamOverrides): void {
+    const raw = (agent as BridgedAgent)[RAW_AGENT]
+    if (raw === undefined) {
+      throw new Error('dsh-biz-bridge: agent was not built by this gateway; cannot apply model selection')
+    }
+    let ref = modelSelections.get(sessionId)
+    if (ref === undefined) {
+      ref = { current: undefined, assembled: undefined }
+      modelSelections.set(sessionId, ref)
+    }
+    // 只有成对给出才更新：单给一个 DSH 会报 `agent has no provider/model`（形状校验见 ops.ts），
+    // 不成对时**保持上次的选择**而不是清掉 —— 会话级选择本来就该跨请求延续。
+    if (selection?.provider !== undefined && selection.model !== undefined) {
+      const next: SessionModelSelection = {
+        provider: selection.provider,
+        model: selection.model,
+        ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+      }
+      // **变了才记**（判定与文案见 core/model-selection.ts）：这行是"换了模型到底有没有生效"
+      // 的第一手证据；每轮请求都写一条，真正的切换就淹在噪声里了。
+      const switched = modelSwitchLog(sessionId, ref.current, next)
+      if (switched !== undefined) log?.(switched)
+      ref.current = {
+        provider: next.provider,
+        model: next.model,
+        ...next.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: ReasoningEffortId(next.reasoningEffort) },
+      }
+    }
+    if (selectionInstalled.has(raw)) return
+    selectionInstalled.add(raw)
+    // listener 挂在 agent 自己的作用域上，agent 销毁时随之释放；桥接不持有 disposer。
+    installModelSelection(raw.ctx, ref)
+    // 装载本身也记一条：它区分"选择刚建立"和"选择在既有会话上生效"，
+    // 排查"换了模型没反应"时第一眼看的就是它有没有出现。
+    log?.(modelSelectionInstallLog(sessionId, ref.current))
+  }
+
   return {
+    applyModelSelection,
     liveAgent(sessionId: string): BridgeAgent | undefined {
       // live 复用必须走 agents.get：DSH 0.1.5 起 resume() 会尝试持久写句柄独占
       // （0.1.7 仍如此），而 live agent 仍持有该句柄 → 直接 resume 会抛 already owned。
